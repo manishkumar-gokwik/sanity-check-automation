@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Sanity Check — Flow Diagram</title>
+<style>
+body { font-family: 'Segoe UI', Arial, sans-serif; background: #f8fafc; padding: 30px; margin: 0; }
+h1 { color: #1a2a40; text-align: center; margin-bottom: 30px; }
+.flow { max-width: 1200px; margin: 0 auto; }
+.phase { background: white; border-radius: 12px; padding: 25px; margin-bottom: 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); border-left: 5px solid #3b82f6; }
+.phase.phase1 { border-left-color: #f59e0b; }
+.phase.phase2 { border-left-color: #8b5cf6; }
+.phase.phase3 { border-left-color: #10b981; }
+.phase h2 { margin-top: 0; color: #1a2a40; }
+.phase-subtitle { color: #64748b; font-size: 0.9rem; margin-bottom: 15px; }
+.arrow { text-align: center; font-size: 2rem; color: #94a3b8; margin: 10px 0; }
+.step { background: #f8fafc; padding: 12px 16px; border-radius: 8px; margin-bottom: 10px; border-left: 3px solid #3b82f6; }
+.step-num { font-weight: bold; color: #1d4ed8; margin-right: 8px; }
+.source { display: inline-block; background: #eff6ff; color: #1d4ed8; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
+.source.sheet { background: #dcfce7; color: #166534; }
+.source.browser { background: #fef3c7; color: #92400e; }
+.source.drive { background: #e0e7ff; color: #4338ca; }
+.source.email { background: #fce7f3; color: #9f1239; }
+.checks-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px; margin-top: 20px; }
+.check-card { background: #f8fafc; border-radius: 10px; padding: 15px; border: 2px solid #e2e8f0; }
+.check-card h3 { margin: 0 0 10px; color: #1a2a40; font-size: 1rem; display: flex; align-items: center; gap: 8px; }
+.check-card .num { background: #3b82f6; color: white; width: 26px; height: 26px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 0.85rem; }
+.check-card .label { font-weight: 600; color: #475569; font-size: 0.8rem; margin-top: 8px; }
+.check-card .value { color: #64748b; font-size: 0.85rem; margin-bottom: 5px; }
+.result { display: flex; gap: 10px; margin-top: 10px; font-size: 0.75rem; }
+.result .pass { background: #dcfce7; color: #166534; padding: 3px 8px; border-radius: 4px; }
+.result .fail { background: #fee2e2; color: #991b1b; padding: 3px 8px; border-radius: 4px; }
+.result .warn { background: #fef3c7; color: #92400e; padding: 3px 8px; border-radius: 4px; }
+.sources-summary { background: white; border-radius: 12px; padding: 25px; margin-top: 20px; }
+.sources-summary ul { list-style: none; padding: 0; }
+.sources-summary li { padding: 10px 0; border-bottom: 1px solid #e2e8f0; }
+.why-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 15px; }
+.why-card { background: #fff7ed; border: 1px solid #fed7aa; border-radius: 8px; padding: 12px 16px; }
+.why-card strong { color: #9a3412; }
+</style>
+</head>
+<body>
+
+<div class="flow">
+<h1>🔍 Sanity Check Automation — Complete Flow</h1>
+
+<div class="phase">
+<h2>🚀 Trigger</h2>
+<div class="phase-subtitle">User clicks "Run Sanity Check" on dashboard (localhost:5000) OR daily 5 PM scheduler</div>
+</div>
+
+<div class="arrow">↓</div>
+
+<div class="phase">
+<h2>📊 PHASE 0: Load Merchant Data <span class="source sheet">Google Sheets API</span></h2>
+<div class="step"><span class="step-num">0.1</span> Read <strong>"Manish sanity"</strong> sheet → Merchant names, EB MID, Expected rates (UPI/CC/DC)</div>
+<div class="step"><span class="step-num">0.2</span> Read <strong>"Salt n key"</strong> sheet → Expected KEY + SALT per merchant</div>
+<div class="step"><span class="step-num">0.3</span> Read <strong>"Auto Check"</strong> tracker → Current check status</div>
+</div>
+
+<div class="arrow">↓</div>
+
+<div class="phase phase1">
+<h2>🌐 PHASE 1: Easebuzz Partner Portal <span class="source browser">Browser Automation</span></h2>
+<div class="phase-subtitle">URL: partners.easebuzz.in</div>
+<div class="step"><span class="step-num">1.1</span> Login → Email/Password from <code>.env</code></div>
+<div class="step"><span class="step-num">1.2</span> Navigate: Custom Reports → Merchant Settlements</div>
+<div class="step"><span class="step-num">1.3</span> Click "Generate New Report" → Fill form (All merchants, last 30 days)</div>
+<div class="step"><span class="step-num">1.4</span> Wait 60-90s for report generation</div>
+<div class="step"><span class="step-num">1.5</span> Download CSV → <code>settlement_report.csv</code></div>
+</div>
+
+<div class="arrow">↓</div>
+
+<div class="phase">
+<h2>✅ Per-Merchant Checks (1-3)</h2>
+
+<div class="checks-grid">
+<div class="check-card">
+<h3><span class="num">1</span> Settlement</h3>
+<div class="label">Source:</div>
+<div class="value">settlement_report.csv</div>
+<div class="label">Logic:</div>
+<div class="value">Filter by EB MID → count transactions + amount</div>
+<div class="result">
+<span class="pass">PASS: Active</span>
+<span class="warn">WARN: No txns</span>
+</div>
+</div>
+
+<div class="check-card">
+<h3><span class="num">2</span> MDR</h3>
+<div class="label">Formula:</div>
+<div class="value">(Service Charge / Amount) × 100</div>
+<div class="label">Compare:</div>
+<div class="value">Actual vs Expected from sheet</div>
+<div class="result">
+<span class="pass">PASS: Match (±0.05%)</span>
+<span class="fail">FAIL: Mismatch</span>
+</div>
+</div>
+
+<div class="check-card">
+<h3><span class="num">3</span> Account Number</h3>
+<div class="label">EB Account:</div>
+<div class="value">settlement_report.csv</div>
+<div class="label">Cheque:</div>
+<div class="value"><span class="source drive">Drive OCR</span> Tesseract → regex</div>
+<div class="result">
+<span class="pass">PASS: Match</span>
+<span class="fail">FAIL: Mismatch (fraud!)</span>
+</div>
+</div>
+</div>
+</div>
+
+<div class="arrow">↓</div>
+
+<div class="phase phase2">
+<h2>🌐 PHASE 2: GoKwik Dashboard <span class="source browser">Browser Automation</span></h2>
+<div class="phase-subtitle">URL: dashboard.gokwik.co</div>
+<div class="step"><span class="step-num">2.1</span> Login → Email/Password from <code>.env</code></div>
+<div class="step"><span class="step-num">2.2</span> OTP auto-fetch <span class="source email">Gmail IMAP</span> → Extract 6-digit from "GoKwik Signin" email</div>
+<div class="step"><span class="step-num">2.3</span> Navigate: Kwik Payment → Settings → Terminals</div>
+</div>
+
+<div class="arrow">↓</div>
+
+<div class="phase">
+<h2>✅ Per-Merchant Checks (4-5)</h2>
+
+<div class="checks-grid" style="grid-template-columns: 1fr 1fr;">
+<div class="check-card">
+<h3><span class="num">4</span> SALT & KEY</h3>
+<div class="label">Steps:</div>
+<div class="value">
+1. Switch merchant (dropdown)<br>
+2. Navigate Terminals again<br>
+3. Click Edit on Easebuzz<br>
+4. Extract KEY + SALT from form<br>
+5. Compare with "Salt n key" sheet
+</div>
+<div class="result">
+<span class="pass">PASS: Match</span>
+<span class="fail">FAIL: Mismatch</span>
+</div>
+</div>
+
+<div class="check-card">
+<h3><span class="num">5</span> VPA / Webhook</h3>
+<div class="label">Steps:</div>
+<div class="value">
+1. Click Orders in sidebar<br>
+2. Open first order (KWIK...)<br>
+3. Find Payment → Link column<br>
+4. Parse <code>upi://pay?pa=...</code><br>
+5. Check merchant name in VPA
+</div>
+<div class="result">
+<span class="pass">PASS: VPA valid</span>
+<span class="warn">WARN: No orders</span>
+</div>
+</div>
+</div>
+</div>
+
+<div class="arrow">↓</div>
+
+<div class="phase phase3">
+<h2>📋 PHASE 3: Results</h2>
+<div class="step"><span class="step-num">3.1</span> Aggregate: Overall = PASS / FAIL / WARN per merchant</div>
+<div class="step"><span class="step-num">3.2</span> Display on dashboard (localhost:5000 → Results tab)</div>
+<div class="step"><span class="step-num">3.3</span> Write back to "Auto Check" sheet</div>
+<div class="step"><span class="step-num">3.4</span> Export: PDF / CSV / Email Draft for discrepancies</div>
+<div class="step"><span class="step-num">3.5</span> Daily 5 PM automatic run via APScheduler</div>
+</div>
+
+<div class="sources-summary">
+<h2>📚 Data Sources Summary</h2>
+<ul>
+<li><span class="source sheet">Google Sheets API</span> <strong>"Manish sanity"</strong> — Merchant list + Expected MDR rates</li>
+<li><span class="source sheet">Google Sheets API</span> <strong>"Salt n key"</strong> — Expected SALT & KEY per merchant</li>
+<li><span class="source sheet">Google Sheets API</span> <strong>"Auto Check"</strong> — Tracker (results written here)</li>
+<li><span class="source browser">Browser</span> <strong>partners.easebuzz.in</strong> — Settlement Report (actual txn data)</li>
+<li><span class="source browser">Browser</span> <strong>dashboard.gokwik.co</strong> — Production SALT/KEY + VPA from orders</li>
+<li><span class="source drive">Drive API</span> <strong>Cancelled Cheque folder</strong> — Bank account via OCR</li>
+<li><span class="source email">Gmail IMAP</span> <strong>paymentsops@gokwik.co</strong> — Auto OTP fetch</li>
+</ul>
+</div>
+
+<div class="sources-summary">
+<h2>🎯 Why Each Check?</h2>
+<div class="why-grid">
+<div class="why-card"><strong>1. Settlement</strong><br>Verify settlements are actually happening</div>
+<div class="why-card"><strong>2. MDR</strong><br>Ensure correct rates are charged (commercial team validation)</div>
+<div class="why-card"><strong>3. Account Number</strong><br>Detect fraud — wrong bank = money going to wrong person</div>
+<div class="why-card"><strong>4. SALT & KEY</strong><br>Ensure production config matches agreed credentials</div>
+<div class="why-card" style="grid-column: span 2;"><strong>5. VPA / Webhook</strong><br>Verify payment routing — merchant's UPI ID correctness</div>
+</div>
+</div>
+
+</div>
+</body>
+</html>

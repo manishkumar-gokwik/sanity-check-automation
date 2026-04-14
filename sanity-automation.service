@@ -1,0 +1,17 @@
+[Unit]
+Description=GoKwik Sanity Check Automation
+After=network.target
+
+[Service]
+Type=simple
+User=vidit
+WorkingDirectory=/home/vidit/Desktop/Automation
+Environment="PATH=/home/vidit/Desktop/Automation/venv/bin"
+ExecStart=/home/vidit/Desktop/Automation/start_production.sh
+Restart=always
+RestartSec=10
+StandardOutput=append:/home/vidit/Desktop/Automation/logs/stdout.log
+StandardError=append:/home/vidit/Desktop/Automation/logs/stderr.log
+
+[Install]
+WantedBy=multi-user.target

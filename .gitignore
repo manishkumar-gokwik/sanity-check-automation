@@ -1,0 +1,12 @@
+.env
+config/service_account.json
+config/settlement_report.csv
+config/settlement_accounts.json
+config/*.csv
+venv/
+__pycache__/
+*.pyc
+debug_*.png
+reports/*.pdf
+/tmp/
+*.log

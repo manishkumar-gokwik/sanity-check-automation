@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GoKwik - Sanity Check</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+
+<!-- Sidebar -->
+<aside class="sidebar">
+    <div class="sidebar-logo">
+        <span>GoKwik</span>
+    </div>
+    <nav class="sidebar-nav">
+        <div class="nav-section">Main</div>
+        <a class="nav-item active" onclick="switchTab('merchants')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+            <span>Merchant List</span>
+        </a>
+        <a class="nav-item" onclick="switchTab('sanity')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
+            <span>Run Sanity Check</span>
+        </a>
+        <a class="nav-item" onclick="switchTab('results')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+            <span>Results & Reports</span>
+        </a>
+
+        <div class="nav-section">Settings</div>
+        <a class="nav-item" onclick="switchTab('settings')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+            <span>Settings</span>
+        </a>
+    </nav>
+    <div class="sidebar-footer">
+        Sanity Check Automation v2.0<br>
+        Merchant Onboarding Team
+    </div>
+</aside>
+
+<!-- Main Content -->
+<div class="main">
+    <header class="topbar">
+        <div class="topbar-left">
+            <span class="page-title">SANITY CHECK</span>
+        </div>
+        <div class="topbar-right">
+            <div id="sheetsStatus" style="display:flex; align-items:center; gap:6px; font-size:0.8rem; color:#94a3b8;">
+                <span class="dot" style="background:#f59e0b;"></span> Checking Sheets...
+            </div>
+            <div class="user-avatar">V</div>
+        </div>
+    </header>
+
+    <div class="content">
+        <!-- Metrics -->
+        <div class="metrics-row">
+            <div class="metric-card">
+                <div class="label">Total Merchants</div>
+                <div class="value blue" id="metricTotal">0</div>
+            </div>
+            <div class="metric-card">
+                <div class="label">Checked</div>
+                <div class="value gray" id="metricChecked">0</div>
+            </div>
+            <div class="metric-card">
+                <div class="label">Passed</div>
+                <div class="value green" id="metricPassed">0</div>
+            </div>
+            <div class="metric-card">
+                <div class="label">Failed</div>
+                <div class="value red" id="metricFailed">0</div>
+            </div>
+        </div>
+
+        <!-- Tabs -->
+        <div class="tabs">
+            <button class="tab active" onclick="switchTab('merchants')">Merchant List</button>
+            <button class="tab" onclick="switchTab('sanity')">Run Sanity Check</button>
+            <button class="tab" onclick="switchTab('results')">Results & Reports</button>
+            <button class="tab" onclick="switchTab('settings')">Settings</button>
+        </div>
+
+        <!-- Tab 1: Merchant List -->
+        <div class="tab-content active" id="tab-merchants">
+            <div class="card">
+                <div class="card-header">
+                    <h3>Today's Merchants (from Sanity Tracker)</h3>
+                    <button class="btn btn-primary" onclick="loadTodayMerchants()">Load Today's Data</button>
+                </div>
+                <div class="card-body">
+                    <div class="search-bar">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                        <input type="text" id="searchInput" placeholder="Search merchant by name..." oninput="filterMerchants()">
+                    </div>
+                    <div id="merchantTableContainer">
+                        <p style="color:#94a3b8; text-align:center; padding:2rem;">Click "Load Today's Data" to fetch merchants from Google Sheet</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tab 2: Run Sanity Check -->
+        <div class="tab-content" id="tab-sanity">
+            <!-- Scheduler Status -->
+            <div class="card" style="border: 2px solid #10b981; margin-bottom:1rem;">
+                <div class="card-body" style="display:flex; justify-content:space-between; align-items:center; padding:1rem 1.5rem;">
+                    <div>
+                        <div style="font-weight:700; color:#059669;">Automatic Daily Check</div>
+                        <div id="schedulerInfo" style="font-size:0.85rem; color:#64748b;">Loading scheduler status...</div>
+                    </div>
+                    <button class="btn btn-primary" onclick="runNow()" style="background:#059669;">Run Now</button>
+                </div>
+            </div>
+
+            <!-- Checks Info -->
+            <div class="card" style="border: 2px solid #f59e0b; margin-bottom:1rem;">
+                <div class="card-body" style="padding:1rem 1.5rem;">
+                    <div style="font-weight:700; color:#92400e; margin-bottom:0.5rem;">5 Automated Checks</div>
+                    <div style="font-size:0.85rem; color:#64748b; display:grid; grid-template-columns: 1fr 1fr; gap:0.3rem;">
+                        <span>1. Settlement (EB Portal auto-report)</span>
+                        <span>2. MDR (Actual vs Expected rates)</span>
+                        <span>3. Account Number (Cheque OCR vs EB)</span>
+                        <span>4. SALT & KEY (GK Dashboard vs Sheet)</span>
+                        <span>5. VPA/Webhook (GK Orders)</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Manual Run -->
+            <div class="card" style="border: 2px solid #3b82f6;">
+                <div class="card-header" style="background: linear-gradient(135deg, #eff6ff, #dbeafe);">
+                    <h3 style="color:#1d4ed8;">Manual Sanity Check</h3>
+                </div>
+                <div class="card-body">
+                    <p style="color:#64748b; margin-bottom:1rem;">Data is pulled automatically from Google Sheets. Select a date or leave empty for today's merchants.</p>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Date (optional — leave empty for today)</label>
+                            <input class="form-input" id="checkDate" type="date">
+                        </div>
+                        <div class="form-group" style="display:flex; align-items:flex-end;">
+                            <button class="btn btn-primary" onclick="runBatchCheck()" style="font-size:1.1rem; padding:12px 40px;">
+                                Run Sanity Check
+                            </button>
+                        </div>
+                    </div>
+                    <div id="checkStatus" style="margin-top:1rem;"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tab 3: Results -->
+        <div class="tab-content" id="tab-results">
+            <div class="card">
+                <div class="card-header">
+                    <h3>Validation Results</h3>
+                    <div>
+                        <button class="btn btn-primary" onclick="writeToSheet()" style="margin-right:8px; background:#059669;">Write to Sheet</button>
+                        <button class="btn btn-primary" onclick="exportPDF()" style="margin-right:8px;">Download PDF</button>
+                        <button class="btn btn-outline" onclick="exportCSV()" style="margin-right:8px;">Export CSV</button>
+                        <button class="btn btn-outline" onclick="generateEmail()" style="margin-right:8px; background:#f59e0b; color:white; border:none;">Draft Email</button>
+                        <button class="btn btn-danger" onclick="clearResults()" style="margin-left:8px;">Clear</button>
+                    </div>
+                </div>
+                <div class="card-body" id="resultsContainer">
+                    <p style="color:#94a3b8; text-align:center; padding:2rem;">No results yet. Run a sanity check first.</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tab 4: Settings -->
+        <div class="tab-content" id="tab-settings">
+            <div class="card">
+                <div class="card-header">
+                    <h3>Google Sheets Connection</h3>
+                    <button class="btn btn-outline" onclick="checkSheetsStatus()">Test Connection</button>
+                </div>
+                <div class="card-body" id="sheetsConnectionInfo">
+                    <p style="color:#94a3b8;">Click "Test Connection" to verify Google Sheets API access</p>
+                </div>
+            </div>
+
+            <div class="card" style="margin-top:1rem;">
+                <div class="card-header">
+                    <h3>Scheduler Settings</h3>
+                </div>
+                <div class="card-body">
+                    <p style="color:#64748b;">Daily sanity check runs automatically at <strong>5:00 PM</strong> every day.</p>
+                    <div id="schedulerDetails" style="margin-top:1rem;"></div>
+                </div>
+            </div>
+
+            <div class="card" style="margin-top:1rem;">
+                <div class="card-header">
+                    <h3>Data Sources</h3>
+                </div>
+                <div class="card-body">
+                    <div style="display:grid; gap:0.8rem;">
+                        <div style="padding:0.8rem; background:#f0fdf4; border-radius:8px; border:1px solid #bbf7d0;">
+                            <strong style="color:#166534;">Sanity Tracker</strong>
+                            <div style="font-size:0.85rem; color:#64748b;">Daily merchant list + check status</div>
+                        </div>
+                        <div style="padding:0.8rem; background:#fef3c7; border-radius:8px; border:1px solid #fde68a;">
+                            <strong style="color:#92400e;">Commercial Rates / MDR</strong>
+                            <div style="font-size:0.85rem; color:#64748b;">UPI, CC, DC rates, Agreement dates</div>
+                        </div>
+                        <div style="padding:0.8rem; background:#faf5ff; border-radius:8px; border:1px solid #e9d5ff;">
+                            <strong style="color:#7c3aed;">SALT & KEY</strong>
+                            <div style="font-size:0.85rem; color:#64748b;">MID, KEY, SALT, Live status, Email</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Loading Overlay with Stage Progress -->
+<div id="loadingOverlay" class="loading-overlay" style="display:none;">
+    <div style="background:white; border-radius:16px; padding:2rem 2.5rem; max-width:500px; width:90%; box-shadow:0 20px 60px rgba(0,0,0,0.3);">
+        <h3 style="margin:0 0 1.5rem; color:#1a2a40; text-align:center;" id="loadingTitle">Running Sanity Checks</h3>
+
+        <!-- Stage Progress -->
+        <div id="stageProgress">
+            <div class="stage" id="stage-eb-login">
+                <span class="stage-icon" id="icon-eb-login">&#9711;</span>
+                <span class="stage-text">EB Partner Portal Login</span>
+            </div>
+            <div class="stage" id="stage-settlement">
+                <span class="stage-icon" id="icon-settlement">&#9711;</span>
+                <span class="stage-text">Settlement Report Generate & Download</span>
+            </div>
+            <div class="stage" id="stage-mdr">
+                <span class="stage-icon" id="icon-mdr">&#9711;</span>
+                <span class="stage-text">MDR Verification</span>
+            </div>
+            <div class="stage" id="stage-account">
+                <span class="stage-icon" id="icon-account">&#9711;</span>
+                <span class="stage-text">Account Number (Cheque OCR vs EB)</span>
+            </div>
+            <div class="stage" id="stage-gk-login">
+                <span class="stage-icon" id="icon-gk-login">&#9711;</span>
+                <span class="stage-text">GK Dashboard Login + OTP</span>
+            </div>
+            <div class="stage" id="stage-saltkey">
+                <span class="stage-icon" id="icon-saltkey">&#9711;</span>
+                <span class="stage-text">SALT & KEY Verification</span>
+            </div>
+            <div class="stage" id="stage-vpa">
+                <span class="stage-icon" id="icon-vpa">&#9711;</span>
+                <span class="stage-text">VPA / Webhook Check</span>
+            </div>
+        </div>
+
+        <!-- Current merchant -->
+        <div id="currentMerchant" style="margin-top:1rem; padding:0.8rem; background:#f0f9ff; border-radius:8px; text-align:center; font-size:0.85rem; color:#0369a1; display:none;">
+            Checking: <strong id="currentMerchantName">—</strong> <span id="merchantProgress"></span>
+        </div>
+
+        <p id="loadingText" style="text-align:center; color:#94a3b8; font-size:0.85rem; margin-top:1rem;">Starting...</p>
+    </div>
+</div>
+
+<style>
+.stage {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    margin-bottom: 4px;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    color: #64748b;
+    transition: all 0.3s;
+}
+.stage.active {
+    background: #eff6ff;
+    color: #1d4ed8;
+    font-weight: 600;
+}
+.stage.done {
+    color: #059669;
+}
+.stage.error {
+    color: #dc2626;
+}
+.stage-icon {
+    font-size: 1.1rem;
+    width: 22px;
+    text-align: center;
+}
+.stage.active .stage-icon::after {
+    content: '';
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid #3b82f6;
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+.stage.active .stage-icon { font-size: 0; }
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
+
+<script src="/static/js/app.js"></script>
+</body>
+</html>
