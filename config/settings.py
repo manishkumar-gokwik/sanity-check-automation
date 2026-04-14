@@ -21,21 +21,19 @@ EB_PARTNER_URL = os.getenv('EB_PARTNER_URL', 'https://partners.easebuzz.in')
 GK_DASHBOARD_URL = os.getenv('GK_DASHBOARD_URL', 'https://dashboard.gokwik.co')
 
 # ─── Google Sheets ────────────────────────────────────────
-# Easebuzz SALT AND KEY (main sheet)
+# Easebuzz SALT AND KEY
 EASEBUZZ_SALT_KEY_SHEET_ID = "1AXFP7jasPRV4sUKMqaLOok6-Ljg1SgYK37HzInHY2wc"
 EASEBUZZ_SALT_KEY_GID = "0"
 
-# Merchant Onboarding - Sanity (tracker — quality check 2026 tab)
-SANITY_TRACKER_SHEET_ID = "1d6keVwEImXgieLzQG0RHfDKcNoe-vUpORDOph5YHoGk"
-SANITY_TRACKER_GID = "1800442686"
-
-# Merchant list + MDR rates (using tracker as sample for now)
-SANITY_SAMPLE_SHEET_ID = "19dNJcefPXGl3CNE8Dd1_YiCzha6kbPf9NGUL1rm2URI"
-SANITY_SAMPLE_GID = "0"
-
-# Old sheets (kept for reference)
+# Commercial / MDR sheet (merchant list + expected rates)
 COMMERCIAL_SHEET_ID = "1CPuJSbd4emdVzfUOpr7cyYE0FBLlqlYE3_OHQtQATcY"
 COMMERCIAL_SHEET_GID = "0"
+SANITY_SAMPLE_SHEET_ID = "1CPuJSbd4emdVzfUOpr7cyYE0FBLlqlYE3_OHQtQATcY"
+SANITY_SAMPLE_GID = "0"
+
+# Sanity Check sheet (results written here — Yes/No)
+SANITY_TRACKER_SHEET_ID = "18RU1UCrGE6XMpYv4xTfP_3BXp_m6GmL6ADXnV1ZtLVc"
+SANITY_TRACKER_GID = "0"
 
 SERVICE_ACCOUNT_FILE = os.path.join(BASE_DIR, "config", "service_account.json")
 GOOGLE_SHEETS_SCOPES = [
@@ -44,7 +42,7 @@ GOOGLE_SHEETS_SCOPES = [
 ]
 
 # ─── Google Drive ─────────────────────────────────────────
-CHEQUE_DRIVE_FOLDER_ID = '1hlk956QtbMGy1p2TlwSjBVbhoqom3vky'
+CHEQUE_DRIVE_FOLDER_ID = '1uNLqPV_0qqLTufJviWJtcB_KQ67ve2Pv'
 
 # ─── Browser ──────────────────────────────────────────────
 HEADLESS = os.getenv('HEADLESS', 'true').lower() == 'true'

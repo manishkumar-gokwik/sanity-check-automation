@@ -635,31 +635,91 @@ async def run_batch_sanity_check(selected_date='', progress=None):
             progress['merchant_idx'] = idx
             progress['total'] = total
 
-    # 1. Get merchant list
+    # 1. Get merchant list from tracking sheet
+    # Two categories:
+    #   a) Previous day merchants (newly added yesterday)
+    #   b) All merchants with any check empty or "No" (incomplete/failed)
+    from modules.sheets_reader import get_sanity_tracker
+
+    tracker = get_sanity_tracker()
+    if tracker.empty:
+        return {"error": "Tracking sheet is empty", "results": []}
+
+    # Check columns in tracker
+    check_cols = []
+    for col in tracker.columns:
+        cl = col.strip().lower()
+        if cl in ('settlement report triggered', 'commercial validation', 'bank accont',
+                  'bank accont ', 'web hook - vpa', 'salt and key validation'):
+            check_cols.append(col)
+
+    # Find merchant name column
+    name_col = None
+    for col in tracker.columns:
+        if col.strip().lower() == 'merchant name':
+            name_col = col
+            break
+    if not name_col:
+        return {"error": "No 'Merchant Name' column in tracking sheet", "results": []}
+
+    # Category A: Previous day merchants
+    prev_day_merchants = pd.DataFrame()
+    if 'Date' in tracker.columns:
+        tracker_dates = tracker.copy()
+        tracker_dates['_parsed_date'] = pd.to_datetime(tracker_dates['Date'], format='mixed', dayfirst=True, errors='coerce')
+
+        if selected_date:
+            target_date = pd.to_datetime(selected_date, format='mixed', dayfirst=True, errors='coerce')
+        else:
+            target_date = pd.to_datetime(datetime.now().strftime('%Y-%m-%d')) - timedelta(days=1)
+
+        if pd.notna(target_date):
+            prev_day_merchants = tracker_dates[tracker_dates['_parsed_date'].dt.date == target_date.date()]
+            prev_day_merchants = prev_day_merchants[prev_day_merchants[name_col].astype(str).str.strip() != '']
+
+    # Category B: All merchants with any check column empty or "No"
+    incomplete_merchants = pd.DataFrame()
+    if check_cols:
+        def is_incomplete(row):
+            for col in check_cols:
+                val = str(row.get(col, '')).strip().lower()
+                if val in ('', 'no', 'warn', 'nan', 'none'):
+                    return True
+            return False
+
+        mask = tracker.apply(is_incomplete, axis=1)
+        incomplete_merchants = tracker[mask]
+        incomplete_merchants = incomplete_merchants[incomplete_merchants[name_col].astype(str).str.strip() != '']
+
+    # Merge both categories — remove duplicates by merchant name
+    if not prev_day_merchants.empty and not incomplete_merchants.empty:
+        combined = pd.concat([prev_day_merchants, incomplete_merchants]).drop_duplicates(subset=[name_col], keep='first')
+    elif not prev_day_merchants.empty:
+        combined = prev_day_merchants
+    elif not incomplete_merchants.empty:
+        combined = incomplete_merchants
+    else:
+        return {"error": "No merchants to check (no previous day entries and no incomplete checks)", "results": []}
+
+    combined = combined.reset_index(drop=True)
+    # Drop internal columns
+    if '_parsed_date' in combined.columns:
+        combined = combined.drop(columns=['_parsed_date'])
+
+    logger.info(f"Previous day merchants: {len(prev_day_merchants)}, Incomplete: {len(incomplete_merchants)}, Total unique: {len(combined)}")
+
+    # Now get commercial sheet for MDR rates
     sample = get_sanity_sample()
     sample = sample[sample['Merchant Name'].astype(str).str.strip() != ''].reset_index(drop=True)
-    if sample.empty:
-        return {"error": "No merchants found", "results": []}
 
-    # Filter by date if provided
-    if selected_date and 'MDR Details' in sample.columns:
-        target = pd.to_datetime(selected_date, format='mixed', dayfirst=True, errors='coerce')
-        if pd.notna(target):
-            day = str(target.day)
-            month = target.strftime('%b')
-            year = target.strftime('%Y')
-            mask = (sample['MDR Details'].astype(str).str.contains(day, na=False) &
-                   sample['MDR Details'].astype(str).str.contains(month, case=False, na=False) &
-                   sample['MDR Details'].astype(str).str.contains(year, na=False))
-            filtered = sample[mask].reset_index(drop=True)
-            if not filtered.empty:
-                sample = filtered
+    # Use combined as merchant list — merge with commercial for rates
+    merchants_to_check = combined
 
     # 2. Get SALT & KEY sheet
     sk_df = get_salt_key()
 
     latest_date = selected_date or datetime.now().strftime('%Y-%m-%d')
-    logger.info(f"Running checks for {len(sample)} merchants")
+    logger.info(f"Running checks for {len(merchants_to_check)} merchants")
 
     pw = await async_playwright().start()
     batch_results = []
@@ -711,23 +771,30 @@ async def run_batch_sanity_check(selected_date='', progress=None):
         logger.exception(f"GK login failed: {e}")
 
     # ═══ PHASE 3: Run checks per merchant ═══
-    for idx, row in sample.iterrows():
-        merchant_name = _clean(row.get('Merchant Name', ''))
-        eb_mid = _clean(row.get('EB MID', ''))
-        mid = _clean(row.get('MID', ''))
+    for idx, row in merchants_to_check.iterrows():
+        merchant_name = _clean(row.get('Merchant Name', row.get(name_col, '')))
+        eb_mid = _clean(row.get('EB MID', row.get('Mid', '')))
+        mid = _clean(row.get('MID', row.get('Mid', '')))
         if not merchant_name:
             continue
 
-        logger.info(f"Checking {merchant_name} ({idx+1}/{len(sample)})")
-        update_progress('mdr', merchant_name, idx+1, len(sample))
+        logger.info(f"Checking {merchant_name} ({idx+1}/{len(merchants_to_check)})")
+        update_progress('mdr', merchant_name, idx+1, len(merchants_to_check))
         checks = []
 
-        # Get expected rates
-        expected_rates = {
-            'upi': _clean(row.get('UPI', '')),
-            'cc': _clean(row.get('CC', '')),
-            'dc': _clean(row.get('DC below 2K', '')),
-        }
+        # Get expected rates from commercial sheet
+        expected_rates = {'upi': '', 'cc': '', 'dc': ''}
+        if not sample.empty:
+            comm_row = sample[sample['Merchant Name'].astype(str).str.lower() == merchant_name.lower()]
+            if not comm_row.empty:
+                cr = comm_row.iloc[0]
+                expected_rates = {
+                    'upi': _clean(cr.get('UPI', '')),
+                    'cc': _clean(cr.get('CC', '')),
+                    'dc': _clean(cr.get('DC below 2K', '')),
+                }
+                if not eb_mid:
+                    eb_mid = _clean(cr.get('EB MID', ''))
 
         # Get SALT & KEY from sheet
         sk = sk_df[sk_df['Merchant Name'].astype(str).str.lower().str.strip() == merchant_name.lower()]
@@ -735,6 +802,8 @@ async def run_batch_sanity_check(selected_date='', progress=None):
             sk = sk_df[sk_df['MID'].astype(str).str.strip() == mid]
         sheet_key = str(sk.iloc[0].get('KEY', '')).strip() if not sk.empty else ''
         sheet_salt = str(sk.iloc[0].get('SALT', '')).strip() if not sk.empty else ''
+        if not eb_mid and not sk.empty:
+            eb_mid = _clean(sk.iloc[0].get('MID', ''))
 
         # Check 1: Settlement
         try:
@@ -826,6 +895,14 @@ async def run_batch_sanity_check(selected_date='', progress=None):
     passed = sum(1 for r in batch_results if r["overall_status"] == "PASS")
     failed = sum(1 for r in batch_results if r["overall_status"] == "FAIL")
     warned = total - passed - failed
+
+    # Auto-write results to sheet
+    try:
+        from modules.sheets_writer import write_results
+        write_result = write_results(batch_results)
+        logger.info(f"Auto-write to sheet: {write_result}")
+    except Exception as e:
+        logger.error(f"Auto-write failed: {e}")
 
     return {
         "date": latest_date,
