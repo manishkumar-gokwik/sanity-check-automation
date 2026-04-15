@@ -6,6 +6,8 @@ Production-ready with all 5 checks.
 from flask import Flask, render_template, jsonify, request, send_file
 import asyncio
 import logging
+import json
+import os
 from datetime import datetime
 
 logging.basicConfig(
@@ -15,8 +17,24 @@ logging.basicConfig(
 
 app = Flask(__name__)
 
-# Progress tracking for stage-wise updates
-_progress = {"stage": "", "merchant": "", "merchant_idx": 0, "total": 0, "done": False}
+# File-based progress tracking (works across gunicorn workers)
+PROGRESS_FILE = '/tmp/sanity_progress.json'
+
+def _read_progress():
+    try:
+        if os.path.exists(PROGRESS_FILE):
+            with open(PROGRESS_FILE) as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {"stage": "", "merchant": "", "merchant_idx": 0, "total": 0, "done": False}
+
+def _write_progress(data):
+    try:
+        with open(PROGRESS_FILE, 'w') as f:
+            json.dump(data, f)
+    except Exception:
+        pass
 
 # Start scheduler
 try:
@@ -56,21 +74,32 @@ def run_batch():
     data = request.json or {}
     selected_date = data.get('date', '')
     try:
-        _progress['done'] = False
-        _progress['stage'] = 'starting'
+        # File-based progress — shared across workers
+        progress = {"stage": "starting", "merchant": "", "merchant_idx": 0, "total": 0, "done": False}
+        _write_progress(progress)
+
+        # Wrap progress to auto-save on update
+        class FileProgress(dict):
+            def __setitem__(self, key, value):
+                super().__setitem__(key, value)
+                _write_progress(dict(self))
+
+        file_progress = FileProgress(progress)
         from modules.sanity_engine import run_batch_sanity_check
-        result = asyncio.run(run_batch_sanity_check(selected_date, progress=_progress))
-        _progress['done'] = True
+        result = asyncio.run(run_batch_sanity_check(selected_date, progress=file_progress))
+        file_progress['done'] = True
         return jsonify({"success": True, "result": result})
     except Exception as e:
-        _progress['done'] = True
+        p = _read_progress()
+        p['done'] = True
+        _write_progress(p)
         logging.exception("Batch check failed")
         return jsonify({"success": False, "error": str(e)})
 
 
 @app.route('/api/progress')
 def get_progress():
-    return jsonify(_progress)
+    return jsonify(_read_progress())
 
 
 @app.route('/api/write-results', methods=['POST'])
