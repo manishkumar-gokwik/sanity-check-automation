@@ -155,24 +155,58 @@ def _ocr_extract(file_content, mime_type):
 
 
 def extract_bank_details(text):
-    """Extract account number and IFSC from OCR text."""
-    clean_text = text.replace(' ', '')
-
-    # Account number: 8-18 digits
-    account_numbers = re.findall(r'\d{8,18}', clean_text)
-
+    """Extract account number and IFSC from OCR text.
+    Priority: number near 'A/C', 'Account', 'No' keywords.
+    Excludes MICR codes (9-digit codes at bottom of cheque).
+    """
     # IFSC: 4 letters + 0 + 6 alphanumeric
     ifsc_codes = re.findall(r'[A-Z]{4}0[A-Z0-9]{6}', text.upper())
 
-    # Filter out unlikely account numbers (dates, phone numbers etc.)
-    valid_accounts = []
-    for num in account_numbers:
-        # Skip if looks like a date (20260301) or phone number
+    # Find all candidates with context
+    candidates = []  # list of (number, priority, position)
+
+    # Priority 1: Numbers near account-related keywords
+    # Pattern: "A/C No.: 12345678" or "Account Number: 12345678"
+    patterns_with_context = [
+        (r'(?:A/?[Cc]\s*(?:No\.?)?\s*[:.]?\s*)(\d{8,18})', 100),
+        (r'(?:Account\s*(?:No\.?|Number)?\s*[:.]?\s*)(\d{8,18})', 100),
+        (r'(?:CURRENT\s*A/?C[\s\S]{0,50}?)(\d{8,18})', 90),
+        (r'(?:SAVING\s*A/?C[\s\S]{0,50}?)(\d{8,18})', 90),
+    ]
+
+    for pattern, priority in patterns_with_context:
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            num = match.group(1)
+            candidates.append((num, priority, match.start()))
+
+    # Priority 2: All 8-18 digit numbers (filtered)
+    clean_text = text.replace(' ', '')
+    all_numbers = re.findall(r'\d{8,18}', clean_text)
+
+    for num in all_numbers:
+        # Skip dates (20260301)
         if num.startswith('202') and len(num) == 8:
             continue
-        if len(num) == 10 and num.startswith(('91', '98', '97', '96', '95', '94', '93', '92', '91', '90', '89', '88', '87', '86', '85', '84', '83', '82', '81', '80', '79', '78', '77', '76', '75', '74', '73', '72', '71', '70')):
+        # Skip phone numbers
+        if len(num) == 10 and num[0] in '789':
             continue
-        valid_accounts.append(num)
+        # Skip MICR-like codes (9 digits, typical at cheque bottom)
+        if len(num) == 9:
+            continue
+        # Skip if starts with typical cheque number patterns (6-digit)
+        if len(num) < 10:
+            continue
+        candidates.append((num, 10, 0))
+
+    # Dedupe keeping highest priority
+    seen = {}
+    for num, priority, pos in candidates:
+        if num not in seen or seen[num][0] < priority:
+            seen[num] = (priority, pos)
+
+    # Sort by priority (highest first)
+    sorted_nums = sorted(seen.items(), key=lambda x: -x[1][0])
+    valid_accounts = [n for n, _ in sorted_nums]
 
     return {
         "account_numbers": valid_accounts,
