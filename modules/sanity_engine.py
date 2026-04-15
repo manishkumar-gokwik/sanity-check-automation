@@ -729,7 +729,21 @@ async def run_batch_sanity_check(selected_date='', progress=None):
     logger.info("Phase 1: EB Partner Portal")
     sr_df = pd.DataFrame()
     try:
-        eb_browser = await pw.chromium.launch(headless=HEADLESS, args=["--no-sandbox"])
+        eb_browser = await pw.chromium.launch(
+            headless=HEADLESS,
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--disable-extensions",
+                "--disable-background-networking",
+                "--disable-default-apps",
+                "--disable-sync",
+                "--disable-translate",
+                "--no-first-run",
+                "--single-process",
+            ]
+        )
         eb_page = await (await eb_browser.new_context(
             viewport={"width": 1366, "height": 768}, accept_downloads=True
         )).new_page()
@@ -754,7 +768,21 @@ async def run_batch_sanity_check(selected_date='', progress=None):
     gk_browser = None
     gk_logged_in = False
     try:
-        gk_browser = await pw.chromium.launch(headless=HEADLESS, args=["--no-sandbox"])
+        gk_browser = await pw.chromium.launch(
+            headless=HEADLESS,
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--disable-extensions",
+                "--disable-background-networking",
+                "--disable-default-apps",
+                "--disable-sync",
+                "--disable-translate",
+                "--no-first-run",
+                "--single-process",
+            ]
+        )
         gk_page = await (await gk_browser.new_context(
             viewport={"width": 1366, "height": 768}
         )).new_page()
