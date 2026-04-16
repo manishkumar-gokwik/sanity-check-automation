@@ -90,17 +90,28 @@ def _find_cheque_file(folder_id):
 
     files = results.get('files', [])
 
-    # Priority 1: File with "cheque" or "cancel" in name
+    # Words to EXCLUDE (not cheques)
+    exclude_words = ['pan card', 'pancard', 'pan_card', 'aadhaar', 'aadhar',
+                     'gst', 'certificate', 'invoice', 'agreement', 'msa',
+                     'brd', 'ubo', 'fssai', 'license', 'resolution',
+                     'board resolution', 'iec', 'address', 'share']
+
+    def is_excluded(name):
+        name_lower = name.lower()
+        return any(ex in name_lower for ex in exclude_words)
+
+    # Priority 1: File with "cheque" or "cancel" in name (not excluded)
     for f in files:
         name_lower = f['name'].lower()
-        if 'cheque' in name_lower or 'cancel' in name_lower:
+        if ('cheque' in name_lower or 'cancel' in name_lower) and not is_excluded(name_lower):
             if f['mimeType'].startswith(('image/', 'application/pdf')):
                 return f
 
-    # Priority 2: Image files (likely cheque photos)
-    images = [f for f in files if f['mimeType'].startswith('image/')]
-    if images:
-        return images[0]
+    # Priority 2: Image/PDF files that are NOT excluded documents
+    for f in files:
+        if f['mimeType'].startswith(('image/', 'application/pdf')) and not is_excluded(f['name']):
+            # Skip very small files (likely icons/logos)
+            return f
 
     return None
 
