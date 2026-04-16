@@ -183,18 +183,28 @@ def extract_bank_details(text):
     clean_text = text.replace(' ', '')
     all_numbers = re.findall(r'\d{8,18}', clean_text)
 
+    # Collect phone/fax numbers to exclude
+    phone_patterns = re.findall(r'(?:Tel|Fax|Phone|Mobile|Contact)\s*[:.]?\s*(\d{8,15})', text, re.IGNORECASE)
+    phone_set = set(phone_patterns)
+
     for num in all_numbers:
         # Skip dates (20260301)
         if num.startswith('202') and len(num) == 8:
             continue
-        # Skip phone numbers
-        if len(num) == 10 and num[0] in '789':
+        # Skip phone numbers (starts with 2-9, exactly 10 digits)
+        if len(num) == 10 and num[0] in '23456789':
             continue
-        # Skip MICR-like codes (9 digits, typical at cheque bottom)
+        # Skip numbers identified as phone/fax
+        if num in phone_set:
+            continue
+        # Skip MICR-like codes (9 digits)
         if len(num) == 9:
             continue
-        # Skip if starts with typical cheque number patterns (6-digit)
+        # Skip short numbers
         if len(num) < 10:
+            continue
+        # Skip SWIFT codes or PIN codes
+        if len(num) == 11 and num.startswith('0'):
             continue
         candidates.append((num, 10, 0))
 
@@ -264,6 +274,7 @@ def verify_cheque(merchant_name):
                     details['primary_ifsc'] or 'N/A'
                 ),
                 "account_number": details['primary_account'],
+                "account_numbers": details['account_numbers'],
                 "ifsc": details['primary_ifsc'],
                 "file_name": cheque['name'],
                 "folder_name": folder['name'],

@@ -179,6 +179,34 @@ async def check_account_number(sr_df, eb_mid, merchant_name):
         cheque_result = verify_cheque(merchant_name)
         cheque_account = cheque_result.get('account_number', '')
 
+        # Smart match: if EB account exists, search all OCR numbers for it
+        if eb_account and not cheque_account:
+            # Check if EB account appears anywhere in raw OCR text
+            from modules.cheque_verifier import _find_merchant_folder, _find_cheque_file, _download_file, _ocr_extract
+            try:
+                folder = _find_merchant_folder(merchant_name)
+                if folder:
+                    cheque_file = _find_cheque_file(folder['id'])
+                    if cheque_file:
+                        content = _download_file(cheque_file['id'])
+                        raw_text = _ocr_extract(content, cheque_file['mimeType'])
+                        if eb_account in raw_text.replace(' ', ''):
+                            cheque_account = eb_account  # Found in raw text!
+            except Exception:
+                pass
+
+        # Also check all extracted numbers for partial match with EB
+        if eb_account and cheque_account != eb_account:
+            all_accounts = cheque_result.get('account_numbers', []) if isinstance(cheque_result, dict) else []
+            for acc in all_accounts:
+                if acc == eb_account:
+                    cheque_account = acc
+                    break
+                # Partial: last 8 digits match
+                if len(acc) >= 8 and len(eb_account) >= 8 and acc[-8:] == eb_account[-8:]:
+                    cheque_account = acc
+                    break
+
         if cheque_account and eb_account:
             if cheque_account == eb_account:
                 return _make_check("Account Number", "PASS",
