@@ -179,9 +179,8 @@ async def check_account_number(sr_df, eb_mid, merchant_name):
         cheque_result = verify_cheque(merchant_name)
         cheque_account = cheque_result.get('account_number', '')
 
-        # Smart match: if EB account exists, search all OCR numbers for it
-        if eb_account and not cheque_account:
-            # Check if EB account appears anywhere in raw OCR text
+        # Search EB account in raw OCR text (exact match only)
+        if eb_account and cheque_account != eb_account:
             from modules.cheque_verifier import _find_merchant_folder, _find_cheque_file, _download_file, _ocr_extract
             try:
                 folder = _find_merchant_folder(merchant_name)
@@ -190,20 +189,17 @@ async def check_account_number(sr_df, eb_mid, merchant_name):
                     if cheque_file:
                         content = _download_file(cheque_file['id'])
                         raw_text = _ocr_extract(content, cheque_file['mimeType'])
-                        if eb_account in raw_text.replace(' ', ''):
-                            cheque_account = eb_account  # Found in raw text!
+                        clean_text = raw_text.replace(' ', '')
+                        if eb_account in clean_text:
+                            cheque_account = eb_account
             except Exception:
                 pass
 
-        # Also check all extracted numbers for partial match with EB
+        # Check all extracted numbers for exact match only
         if eb_account and cheque_account != eb_account:
             all_accounts = cheque_result.get('account_numbers', []) if isinstance(cheque_result, dict) else []
             for acc in all_accounts:
                 if acc == eb_account:
-                    cheque_account = acc
-                    break
-                # Partial: last 8 digits match
-                if len(acc) >= 8 and len(eb_account) >= 8 and acc[-8:] == eb_account[-8:]:
                     cheque_account = acc
                     break
 
@@ -211,15 +207,6 @@ async def check_account_number(sr_df, eb_mid, merchant_name):
             if cheque_account == eb_account:
                 return _make_check("Account Number", "PASS",
                                  f"Cheque account and EB settlement account match: {cheque_account}",
-                                 expected=f"EB Settlement: {eb_account}",
-                                 actual=f"Cancelled Cheque: {cheque_account}")
-
-            # Partial match check — last 8 digits (OCR often misses first 1-2 digits)
-            eb_last8 = eb_account[-8:] if len(eb_account) >= 8 else eb_account
-            cheque_last8 = cheque_account[-8:] if len(cheque_account) >= 8 else cheque_account
-            if eb_last8 == cheque_last8 and len(eb_last8) >= 8:
-                return _make_check("Account Number", "PASS",
-                                 f"Partial match (last 8 digits): {eb_last8}. Full numbers differ due to OCR reading — EB: {eb_account}, Cheque: {cheque_account}. Please verify manually if needed.",
                                  expected=f"EB Settlement: {eb_account}",
                                  actual=f"Cancelled Cheque: {cheque_account}")
 
