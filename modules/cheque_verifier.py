@@ -113,12 +113,12 @@ def _download_file(file_id):
 
 
 def _ocr_extract(file_content, mime_type):
-    """Extract text from image/PDF using OCR."""
+    """Extract text from image/PDF. For PDF, try direct text extraction first (100% accurate), fallback to OCR."""
     import pytesseract
     from PIL import Image, ImageFilter, ImageEnhance
 
     if mime_type == 'application/pdf':
-        # Convert PDF to image first
+        # Method 1: Direct PDF text extraction (no OCR needed — 100% accurate)
         try:
             import pdfplumber
             tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.pdf')
@@ -126,10 +126,16 @@ def _ocr_extract(file_content, mime_type):
             tmp.close()
             with pdfplumber.open(tmp.name) as pdf:
                 page = pdf.pages[0]
+                text = page.extract_text()
+                if text and len(text.strip()) > 20:
+                    os.unlink(tmp.name)
+                    return text  # Text-based PDF — direct extract works!
+
+                # Method 2: PDF is image-based — convert to image and OCR
                 img = page.to_image(resolution=300).original
             os.unlink(tmp.name)
         except Exception:
-            return "", []
+            return ""
     else:
         img = Image.open(io.BytesIO(file_content))
 
@@ -137,17 +143,15 @@ def _ocr_extract(file_content, mime_type):
     img = img.convert('L')
     img = ImageEnhance.Contrast(img).enhance(3.0)
     img = ImageEnhance.Sharpness(img).enhance(2.0)
-    # Upscale for better OCR accuracy
     img = img.resize((img.width * 2, img.height * 2), Image.LANCZOS)
 
     # Try multiple PSM modes and return best result
-    import re
     best_text = ""
     for psm in ['3', '6', '4']:
         text = pytesseract.image_to_string(img, config='--psm ' + psm)
         numbers = re.findall(r'\d{8,18}', text.replace(' ', ''))
         if numbers:
-            return text  # Found account number, use this result
+            return text
         if len(text) > len(best_text):
             best_text = text
 
