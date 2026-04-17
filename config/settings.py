@@ -44,6 +44,9 @@ GOOGLE_SHEETS_SCOPES = [
 # ─── Google Drive ─────────────────────────────────────────
 CHEQUE_DRIVE_FOLDER_ID = '1uNLqPV_0qqLTufJviWJtcB_KQ67ve2Pv'
 
+# ─── Gemini API ───────────────────────────────────────────
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
+
 # ─── Browser ──────────────────────────────────────────────
 HEADLESS = os.getenv('HEADLESS', 'true').lower() == 'true'
 BROWSER_TIMEOUT = 30000  # Reduced from 60s — faster fail

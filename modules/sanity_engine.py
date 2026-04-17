@@ -776,42 +776,42 @@ async def run_batch_sanity_check(selected_date='', progress=None):
     except Exception as e:
         logger.exception(f"EB phase failed: {e}")
 
-    # ═══ PHASE 2: GK Dashboard (SALT & KEY + VPA) ═══
-    update_progress('gk-login')
-    logger.info("Phase 2: GK Dashboard")
+    # ═══ PHASE 2: GK Dashboard (SALT & KEY + VPA) — DISABLED (IT team restriction) ═══
+    # TODO: Re-enable when GK Dashboard access is restored
+    logger.info("Phase 2: GK Dashboard — SKIPPED (login disabled by IT team)")
     gk_page = None
     gk_browser = None
     gk_logged_in = False
-    try:
-        gk_browser = await pw.chromium.launch(
-            headless=HEADLESS,
-            args=[
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--disable-extensions",
-                "--disable-background-networking",
-                "--disable-default-apps",
-                "--disable-sync",
-                "--disable-translate",
-                "--no-first-run",
-                "--single-process",
-            ]
-        )
-        gk_page = await (await gk_browser.new_context(
-            viewport={"width": 1366, "height": 768}
-        )).new_page()
-        gk_page.set_default_timeout(BROWSER_TIMEOUT)
+    if False:  # Set to True to re-enable GK Dashboard checks
+        try:
+            gk_browser = await pw.chromium.launch(
+                headless=HEADLESS,
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                    "--disable-extensions",
+                    "--disable-background-networking",
+                    "--disable-default-apps",
+                    "--disable-sync",
+                    "--disable-translate",
+                    "--no-first-run",
+                    "--single-process",
+                ]
+            )
+            gk_page = await (await gk_browser.new_context(
+                viewport={"width": 1366, "height": 768}
+            )).new_page()
+            gk_page.set_default_timeout(BROWSER_TIMEOUT)
 
-        gk_logged_in = await _gk_login(gk_page)
-        if gk_logged_in:
-            logger.info("GK login OK")
-            # Navigate to Terminals first
-            await _gk_navigate_terminals(gk_page)
-        else:
-            logger.error("GK login failed")
-    except Exception as e:
-        logger.exception(f"GK login failed: {e}")
+            gk_logged_in = await _gk_login(gk_page)
+            if gk_logged_in:
+                logger.info("GK login OK")
+                await _gk_navigate_terminals(gk_page)
+            else:
+                logger.error("GK login failed")
+        except Exception as e:
+            logger.exception(f"GK login failed: {e}")
 
     # ═══ PHASE 3: Run checks per merchant ═══
     for idx, row in merchants_to_check.iterrows():
