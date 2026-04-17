@@ -90,28 +90,12 @@ def _find_cheque_file(folder_id):
 
     files = results.get('files', [])
 
-    # Words to EXCLUDE (not cheques)
-    exclude_words = ['pan card', 'pancard', 'pan_card', 'aadhaar', 'aadhar',
-                     'gst', 'certificate', 'invoice', 'agreement', 'msa',
-                     'brd', 'ubo', 'fssai', 'license', 'resolution',
-                     'board resolution', 'iec', 'address', 'share']
-
-    def is_excluded(name):
-        name_lower = name.lower()
-        return any(ex in name_lower for ex in exclude_words)
-
-    # Priority 1: File with "cheque" or "cancel" in name (not excluded)
+    # ONLY pick files with "cheque" in the name (prefix, middle, or suffix)
     for f in files:
         name_lower = f['name'].lower()
-        if ('cheque' in name_lower or 'cancel' in name_lower) and not is_excluded(name_lower):
+        if 'cheque' in name_lower:
             if f['mimeType'].startswith(('image/', 'application/pdf')):
                 return f
-
-    # Priority 2: Image/PDF files that are NOT excluded documents
-    for f in files:
-        if f['mimeType'].startswith(('image/', 'application/pdf')) and not is_excluded(f['name']):
-            # Skip very small files (likely icons/logos)
-            return f
 
     return None
 
@@ -132,7 +116,7 @@ def _gemini_extract(file_content, mime_type):
             return None
 
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-2.5-flash')
 
         # Convert PDF to image if needed
         if mime_type == 'application/pdf':
@@ -158,14 +142,28 @@ def _gemini_extract(file_content, mime_type):
         import base64
         b64 = base64.b64encode(content_for_gemini).decode('utf-8')
 
-        response = model.generate_content([
+        import time
+        # Retry with delay for rate limiting
+        response = None
+        for attempt in range(3):
+            try:
+                response = model.generate_content([
             "Extract ONLY the bank account number from this cancelled cheque image. "
             "The account number is usually printed near 'A/C No' or 'Account Number' text. "
             "Do NOT return the MICR code (numbers at bottom of cheque), phone numbers, or IFSC code. "
             "Return ONLY the account number digits, nothing else. "
             "If you cannot find the account number, return 'NOT_FOUND'.",
-            {"mime_type": mime_for_gemini, "data": b64}
-        ])
+                {"mime_type": mime_for_gemini, "data": b64}
+                ])
+                break
+            except Exception as retry_err:
+                if '429' in str(retry_err) and attempt < 2:
+                    time.sleep(40)  # Wait for rate limit reset
+                    continue
+                raise
+
+        if not response:
+            return None
 
         result = response.text.strip()
         # Clean: remove spaces, newlines, non-digits

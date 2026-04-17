@@ -776,13 +776,13 @@ async def run_batch_sanity_check(selected_date='', progress=None):
     except Exception as e:
         logger.exception(f"EB phase failed: {e}")
 
-    # ═══ PHASE 2: GK Dashboard (SALT & KEY + VPA) — DISABLED (IT team restriction) ═══
-    # TODO: Re-enable when GK Dashboard access is restored
-    logger.info("Phase 2: GK Dashboard — SKIPPED (login disabled by IT team)")
+    # ═══ PHASE 2: GK Dashboard (SALT & KEY + VPA) ═══
+    update_progress('gk-login')
+    logger.info("Phase 2: GK Dashboard")
     gk_page = None
     gk_browser = None
     gk_logged_in = False
-    if False:  # Set to True to re-enable GK Dashboard checks
+    if True:  # GK Dashboard checks enabled
         try:
             gk_browser = await pw.chromium.launch(
                 headless=HEADLESS,
@@ -897,9 +897,10 @@ async def run_batch_sanity_check(selected_date='', progress=None):
                            "Reason: GK Dashboard login failed or there is a connection issue.")
         checks.append(c4)
 
-        # Check 5: VPA (GK Dashboard)
+        # Check 5: VPA (GK Dashboard) — only if merchant was switched successfully
         update_progress('vpa', merchant_name, idx+1, len(sample))
-        if gk_logged_in and gk_page:
+        switched_ok = c4.get('status') == 'PASS' if c4 else False
+        if gk_logged_in and gk_page and switched_ok:
             try:
                 c5 = await asyncio.wait_for(check_vpa(gk_page, merchant_name), timeout=CHECK_TIMEOUT)
             except asyncio.TimeoutError:
