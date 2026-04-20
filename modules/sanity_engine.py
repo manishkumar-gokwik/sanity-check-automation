@@ -401,14 +401,28 @@ async def _gk_login(page):
         otp = _fetch_gk_otp()
         logger.info(f"GK OTP: {otp}")
         if otp:
+            visible_inputs = []
             for inp in await page.query_selector_all('input'):
                 if await inp.is_visible():
-                    await inp.click()
-                    await inp.fill(otp)
-                    break
+                    visible_inputs.append(inp)
+            if len(visible_inputs) >= len(otp):
+                for i, digit in enumerate(otp):
+                    await visible_inputs[i].click()
+                    await visible_inputs[i].fill(digit)
+                    await asyncio.sleep(0.1)
+            elif visible_inputs:
+                await visible_inputs[0].click()
+                await visible_inputs[0].fill(otp)
             await page.click('button:has-text("Next")')
             await asyncio.sleep(15)
-    return "verify-otp" not in page.url
+    if "verify-otp" in page.url or "login" in page.url:
+        try:
+            await page.screenshot(path='config/gk_login_failed.png', full_page=True)
+            logger.error(f"GK login failed at URL: {page.url} — screenshot saved")
+        except Exception:
+            pass
+        return False
+    return True
 
 
 async def _gk_navigate_terminals(page):
