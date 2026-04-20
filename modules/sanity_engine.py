@@ -422,8 +422,29 @@ async def _gk_navigate_terminals(page):
         await asyncio.sleep(4)
 
 
+async def _gk_ensure_logged_in(page):
+    """If session died (redirected to login), re-login and navigate to Terminals."""
+    if "login" in page.url or "verify-otp" in page.url:
+        logger.info("Session expired — re-logging in")
+        if await _gk_login(page):
+            await _gk_navigate_terminals(page)
+            return True
+        return False
+    return True
+
+
 async def _gk_switch_merchant(page, merchant_name):
     """Switch merchant in GK Dashboard. Tries multiple search terms."""
+    try:
+        await page.keyboard.press('Escape')
+        await asyncio.sleep(0.5)
+    except Exception:
+        pass
+
+    if not await _gk_ensure_logged_in(page):
+        logger.warning(f"Could not re-login before switching to {merchant_name}")
+        return False
+
     try:
         await page.locator('text=Switch merchant').first.click(timeout=10000)
     except Exception:
@@ -767,8 +788,14 @@ async def run_batch_sanity_check(selected_date='', progress=None):
         if await _eb_login(eb_page):
             logger.info("EB login OK")
             update_progress('settlement')
-            sr_df = await _eb_generate_settlement_report(eb_page)
-            logger.info(f"Settlement report: {len(sr_df)} rows")
+            try:
+                sr_df = await asyncio.wait_for(_eb_generate_settlement_report(eb_page), timeout=300)
+                logger.info(f"Settlement report: {len(sr_df)} rows")
+            except asyncio.TimeoutError:
+                logger.error("Settlement report timed out after 5 min — using cached CSV if available")
+                if os.path.exists('config/settlement_report.csv'):
+                    sr_df = pd.read_csv('config/settlement_report.csv', low_memory=False)
+                    logger.info(f"Loaded cached settlement report: {len(sr_df)} rows")
         else:
             logger.error("EB login failed")
 
