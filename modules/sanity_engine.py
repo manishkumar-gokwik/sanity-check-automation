@@ -484,12 +484,12 @@ async def _gk_switch_merchant(page, merchant_name):
     clicked = False
     for term in search_terms:
         try:
-            await gk_input.click()
+            await page.click('.gk-text-input', timeout=10000, force=True)
             await asyncio.sleep(0.5)
             await page.keyboard.press('Control+a')
             await page.keyboard.press('Backspace')
             await asyncio.sleep(0.5)
-            await gk_input.fill(term)
+            await page.fill('.gk-text-input', term, timeout=10000)
             await asyncio.sleep(4)
 
             # Find result — match by merchant name substring
