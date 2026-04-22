@@ -817,42 +817,20 @@ async def run_batch_sanity_check(selected_date='', progress=None):
     except Exception as e:
         logger.exception(f"EB phase failed: {e}")
 
-    # ═══ PHASE 2: GK Dashboard (SALT & KEY + VPA) ═══
-    update_progress('gk-login')
-    logger.info("Phase 2: GK Dashboard")
-    gk_page = None
-    gk_browser = None
-    gk_logged_in = False
-    if True:  # GK Dashboard checks enabled
-        try:
-            gk_browser = await pw.chromium.launch(
-                headless=HEADLESS,
-                args=[
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-gpu",
-                    "--disable-extensions",
-                    "--disable-background-networking",
-                    "--disable-default-apps",
-                    "--disable-sync",
-                    "--disable-translate",
-                    "--no-first-run",
-                    "--single-process",
-                ]
-            )
-            gk_page = await (await gk_browser.new_context(
-                viewport={"width": 1366, "height": 768}
-            )).new_page()
-            gk_page.set_default_timeout(BROWSER_TIMEOUT)
-
-            gk_logged_in = await _gk_login(gk_page)
-            if gk_logged_in:
-                logger.info("GK login OK")
-                await _gk_navigate_terminals(gk_page)
-            else:
-                logger.error("GK login failed")
-        except Exception as e:
-            logger.exception(f"GK login failed: {e}")
+    # ═══ PHASE 2: GK Dashboard — fresh login per merchant (inside the loop) ═══
+    logger.info("Phase 2: GK Dashboard — fresh login per merchant")
+    gk_browser_args = [
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--disable-extensions",
+        "--disable-background-networking",
+        "--disable-default-apps",
+        "--disable-sync",
+        "--disable-translate",
+        "--no-first-run",
+        "--single-process",
+    ]
 
     # ═══ PHASE 3: Run checks per merchant ═══
     for idx, row in merchants_to_check.iterrows():
@@ -917,39 +895,55 @@ async def run_batch_sanity_check(selected_date='', progress=None):
             c3 = _make_check("Account Number", "FAIL", str(e)[:80])
         checks.append(c3)
 
-        # Check 4: SALT & KEY (GK Dashboard)
+        # Checks 4 & 5: SALT & KEY + VPA — fresh GK browser + login for this merchant
         update_progress('saltkey', merchant_name, idx+1, len(sample))
-        if gk_logged_in and gk_page:
-            try:
+        gk_browser = None
+        gk_page = None
+        c4 = None
+        c5 = None
+        try:
+            gk_browser = await pw.chromium.launch(headless=HEADLESS, args=gk_browser_args)
+            gk_page = await (await gk_browser.new_context(
+                viewport={"width": 1366, "height": 768}
+            )).new_page()
+            gk_page.set_default_timeout(BROWSER_TIMEOUT)
+
+            logger.info(f"GK login for {merchant_name}")
+            if await _gk_login(gk_page):
+                await _gk_navigate_terminals(gk_page)
                 switched = await _gk_switch_merchant(gk_page, merchant_name)
                 if switched:
                     await _gk_navigate_terminals(gk_page)
                     c4 = await asyncio.wait_for(check_salt_key(gk_page, merchant_name, sheet_key, sheet_salt), timeout=CHECK_TIMEOUT)
+                    update_progress('vpa', merchant_name, idx+1, len(sample))
+                    try:
+                        c5 = await asyncio.wait_for(check_vpa(gk_page, merchant_name), timeout=CHECK_TIMEOUT)
+                    except asyncio.TimeoutError:
+                        c5 = _make_check("VPA / Webhook", "FAIL", "Timed out")
+                    except Exception as e:
+                        c5 = _make_check("VPA / Webhook", "FAIL", str(e)[:80])
                 else:
                     c4 = _make_check("SALT & KEY", "WARN",
                                    f"Reason: Could not switch to merchant '{merchant_name}' in GK Dashboard. The merchant name may be different in production.")
-            except asyncio.TimeoutError:
-                c4 = _make_check("SALT & KEY", "FAIL",
-                               "Reason: Request timed out. GK Dashboard is responding slowly.")
-            except Exception as e:
-                c4 = _make_check("SALT & KEY", "FAIL", f"Reason: An error occurred — {str(e)[:80]}")
-        else:
-            c4 = _make_check("SALT & KEY", "WARN",
-                           "Reason: GK Dashboard login failed or there is a connection issue.")
-        checks.append(c4)
+            else:
+                c4 = _make_check("SALT & KEY", "WARN",
+                               "Reason: GK Dashboard login failed.")
+        except asyncio.TimeoutError:
+            c4 = c4 or _make_check("SALT & KEY", "FAIL", "Reason: Request timed out.")
+        except Exception as e:
+            c4 = c4 or _make_check("SALT & KEY", "FAIL", f"Reason: An error occurred — {str(e)[:80]}")
+        finally:
+            if gk_browser:
+                try:
+                    await gk_browser.close()
+                except Exception:
+                    pass
 
-        # Check 5: VPA (GK Dashboard) — only if merchant was switched successfully
-        update_progress('vpa', merchant_name, idx+1, len(sample))
-        switched_ok = c4.get('status') == 'PASS' if c4 else False
-        if gk_logged_in and gk_page and switched_ok:
-            try:
-                c5 = await asyncio.wait_for(check_vpa(gk_page, merchant_name), timeout=CHECK_TIMEOUT)
-            except asyncio.TimeoutError:
-                c5 = _make_check("VPA / Webhook", "FAIL", "Timed out")
-            except Exception as e:
-                c5 = _make_check("VPA / Webhook", "FAIL", str(e)[:80])
-        else:
+        if c4 is None:
+            c4 = _make_check("SALT & KEY", "WARN", "Reason: GK Dashboard not reachable.")
+        if c5 is None:
             c5 = _make_check("VPA / Webhook", "WARN", "GK Dashboard not available")
+        checks.append(c4)
         checks.append(c5)
 
         # Overall
@@ -969,11 +963,6 @@ async def run_batch_sanity_check(selected_date='', progress=None):
         })
 
     # Cleanup
-    if gk_browser:
-        try:
-            await gk_browser.close()
-        except Exception:
-            pass
     await pw.stop()
 
     total = len(batch_results)

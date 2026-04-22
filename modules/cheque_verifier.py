@@ -315,39 +315,47 @@ def verify_cheque(merchant_name):
     Full flow: Find merchant folder → Find cheque → OCR → Extract account number.
     Returns dict with account details or error.
     """
+    import logging
+    log = logging.getLogger(__name__)
     try:
-        # Find folder
+        log.info(f"[Cheque] Looking up Drive folder for '{merchant_name}'")
         folder = _find_merchant_folder(merchant_name)
         if not folder:
+            log.warning(f"[Cheque] No Drive folder found for '{merchant_name}'")
             return {
                 "success": False,
                 "status": "WARN",
                 "message": "No folder found in Drive for '{}'".format(merchant_name),
             }
+        log.info(f"[Cheque] Folder found: '{folder['name']}' (id={folder['id']})")
 
-        # Find cheque file
         cheque = _find_cheque_file(folder['id'])
         if not cheque:
+            log.warning(f"[Cheque] No cheque file in folder '{folder['name']}'")
             return {
                 "success": False,
                 "status": "WARN",
                 "message": "No cancelled cheque found in '{}' folder".format(folder['name']),
             }
+        log.info(f"[Cheque] File selected: '{cheque['name']}' ({cheque['mimeType']})")
 
-        # Download
+        log.info(f"[Cheque] Downloading file from Drive")
         content = _download_file(cheque['id'])
+        log.info(f"[Cheque] Downloaded {len(content)} bytes")
 
-        # OCR
+        log.info(f"[Cheque] Extracting text via Gemini/OCR")
         text = _ocr_extract(content, cheque['mimeType'])
         if not text:
+            log.warning(f"[Cheque] Extraction returned empty for '{cheque['name']}'")
             return {
                 "success": False,
                 "status": "WARN",
                 "message": "Could not read cheque image: {}".format(cheque['name']),
             }
+        log.info(f"[Cheque] Extracted text (first 200 chars): {text[:200]!r}")
 
-        # Extract bank details
         details = extract_bank_details(text)
+        log.info(f"[Cheque] Parsed — account: {details['primary_account']}, IFSC: {details['primary_ifsc']}")
 
         if details['primary_account']:
             return {
