@@ -73,7 +73,7 @@ def _make_check(name, status, message, expected='', actual=''):
 # ─── INDIVIDUAL CHECKS ───────────────────────────────────
 
 async def check_settlement(sr_df, eb_mid, merchant_name):
-    """Check 1: Settlement — find merchant in settlement report."""
+    """Check 1: Settlement — find merchant in settlement report by EB MID."""
     try:
         if sr_df.empty:
             return _make_check("Settlement", "WARN",
@@ -81,6 +81,11 @@ async def check_settlement(sr_df, eb_mid, merchant_name):
                              expected="Settlement report CSV",
                              actual="Empty / Failed download")
 
+        if not eb_mid:
+            return _make_check("Settlement", "WARN",
+                             f"Reason: No EB MID found in sheet for '{merchant_name}'. Cannot verify settlement.",
+                             expected="EB MID in sheet",
+                             actual="Empty")
         txns = sr_df[sr_df['Merchant ID'].astype(str).str.strip() == str(eb_mid).strip()]
         if txns.empty:
             return _make_check("Settlement", "WARN",
@@ -104,17 +109,21 @@ async def check_settlement(sr_df, eb_mid, merchant_name):
 
 
 async def check_mdr(sr_df, eb_mid, expected_rates, merchant_name):
-    """Check 2: MDR — calculate actual vs expected."""
+    """Check 2: MDR — calculate actual vs expected. Looks up by EB MID."""
     try:
         if sr_df.empty:
             return _make_check("MDR", "WARN",
                              "Reason: Settlement report is not available, so MDR cannot be calculated.",
                              expected="Settlement report CSV", actual="Empty")
 
+        if not eb_mid:
+            return _make_check("MDR", "WARN",
+                             f"Reason: No EB MID found in sheet for '{merchant_name}'. Cannot calculate MDR.",
+                             expected="EB MID in sheet", actual="Empty")
         txns = sr_df[sr_df['Merchant ID'].astype(str).str.strip() == str(eb_mid).strip()]
         if txns.empty:
             return _make_check("MDR", "WARN",
-                             f"Reason: No transactions found for MID {eb_mid}. MDR cannot be calculated without transaction data.",
+                             f"Reason: No transactions found for EB MID {eb_mid}. MDR cannot be calculated without transaction data.",
                              expected="Transactions to calculate MDR", actual="No transactions")
 
         details = []
@@ -167,9 +176,9 @@ async def check_account_number(sr_df, eb_mid, merchant_name):
     try:
         from modules.cheque_verifier import verify_cheque
 
-        # Get EB account from settlement report
+        # Get EB account from settlement report (match by EB MID)
         eb_account = ''
-        if not sr_df.empty:
+        if not sr_df.empty and eb_mid:
             txns = sr_df[sr_df['Merchant ID'].astype(str).str.strip() == str(eb_mid).strip()]
             if not txns.empty:
                 eb_account = str(txns.iloc[0].get('Settlement Account Number', '')).replace('.0', '').strip()
@@ -447,8 +456,8 @@ async def _gk_ensure_logged_in(page):
     return True
 
 
-async def _gk_switch_merchant(page, merchant_name):
-    """Switch merchant in GK Dashboard. Tries multiple search terms."""
+async def _gk_switch_merchant(page, merchant_name, mid=''):
+    """Switch merchant in GK Dashboard. Searches by MID (primary) then merchant name (fallback)."""
     try:
         await page.keyboard.press('Escape')
         await asyncio.sleep(0.5)
@@ -469,20 +478,24 @@ async def _gk_switch_merchant(page, merchant_name):
     gk_input = await page.query_selector('.gk-text-input')
     if not gk_input:
         logger.warning(f"Search input not found for {merchant_name}")
-        # Close modal before returning
         try:
             await page.keyboard.press('Escape')
         except Exception:
             pass
         return False
 
-    # Try 2 search terms: full name, then first 5 chars
-    search_terms = [merchant_name]
-    if len(merchant_name) > 5:
-        search_terms.append(merchant_name[:5])
+    # Search terms: MID first (exact match), then merchant name as fallback
+    search_terms = []
+    mid_str = str(mid).strip() if mid else ''
+    if mid_str:
+        search_terms.append(('mid', mid_str))
+    if merchant_name:
+        search_terms.append(('name', merchant_name))
+        if len(merchant_name) > 5:
+            search_terms.append(('name', merchant_name[:5]))
 
     clicked = False
-    for term in search_terms:
+    for term_type, term in search_terms:
         try:
             await page.click('.gk-text-input', timeout=10000, force=True)
             await asyncio.sleep(0.5)
@@ -492,31 +505,39 @@ async def _gk_switch_merchant(page, merchant_name):
             await page.fill('.gk-text-input', term, timeout=10000)
             await asyncio.sleep(4)
 
-            # Find result — match by merchant name substring
-            r = await page.evaluate("""(name) => {
-                const lower = name.toLowerCase();
+            # Find result — MID match shows like "MerchantName (66450)shopify"
+            r = await page.evaluate("""({term, termType, name}) => {
+                const lower = (name || '').toLowerCase();
                 const lowerNoSpace = lower.replace(/\\s+/g, '');
+                const midPattern = `(${term})`;
                 for (const el of document.querySelectorAll('.ant-modal-body div, .ant-modal-body label')) {
-                    const text = el.textContent.trim().toLowerCase();
-                    const textNoSpace = text.replace(/\\s+/g, '');
-                    if ((text.includes(lower) || textNoSpace.includes(lowerNoSpace)) && el.children.length<=5) {
-                        const r=el.getBoundingClientRect();
-                        if(r.width>100&&r.height>15&&r.height<80&&r.y>200) {
-                            return {x:r.left+20, y:r.top+r.height/2, text: el.textContent.trim().substring(0,60)};
+                    const text = el.textContent.trim();
+                    const textLower = text.toLowerCase();
+                    const textNoSpace = textLower.replace(/\\s+/g, '');
+                    let match = false;
+                    if (termType === 'mid') {
+                        match = text.includes(midPattern);
+                    } else {
+                        match = lower && (textLower.includes(lower) || textNoSpace.includes(lowerNoSpace));
+                    }
+                    if (match && el.children.length <= 5) {
+                        const r = el.getBoundingClientRect();
+                        if (r.width > 100 && r.height > 15 && r.height < 80 && r.y > 200) {
+                            return {x: r.left + 20, y: r.top + r.height / 2, text: text.substring(0, 60)};
                         }
                     }
                 }
                 return null;
-            }""", merchant_name)
+            }""", {"term": term, "termType": term_type, "name": merchant_name})
 
             if r:
-                logger.info(f"Found merchant '{merchant_name}' via '{term}': {r.get('text', '')}")
+                logger.info(f"Found merchant '{merchant_name}' via {term_type}='{term}': {r.get('text', '')}")
                 await page.mouse.click(r['x'], r['y'])
                 await asyncio.sleep(2)
                 clicked = True
                 break
         except Exception as e:
-            logger.warning(f"Search '{term}' failed: {e}")
+            logger.warning(f"Search '{term}' ({term_type}) failed: {e}")
             continue
 
     if not clicked:
@@ -552,12 +573,10 @@ async def _eb_login(page):
     return "partners.easebuzz.in" in page.url
 
 
-async def _eb_generate_settlement_report(page):
-    """Generate and download settlement report. Returns DataFrame."""
+async def _eb_navigate_to_settlements(page):
+    """Navigate to Custom Reports → Merchant Settlements tab."""
     await page.goto(f"{EB_PARTNER_URL}/custom-reports", wait_until="domcontentloaded")
     await asyncio.sleep(8)
-
-    # Click Merchant Settlements tab
     await page.evaluate("""() => {
         document.querySelectorAll('div').forEach(el => {
             if (el.textContent.trim() === 'Merchant Settlements' && el.children.length === 0) {
@@ -568,6 +587,9 @@ async def _eb_generate_settlement_report(page):
     }""")
     await asyncio.sleep(5)
 
+
+async def _eb_generate_one_merchant_report(page, mid, report_name):
+    """Generate and download settlement report for ONE merchant. Returns path to CSV or None."""
     # Open Generate form
     await page.evaluate("""() => {
         document.querySelectorAll('button').forEach(btn => {
@@ -582,37 +604,86 @@ async def _eb_generate_settlement_report(page):
     # Report Name
     name_input = await page.query_selector('input[placeholder="Please enter report name"]')
     if name_input:
-        await name_input.fill(f"sanity_{datetime.now().strftime('%Y%m%d_%H%M')}")
+        await name_input.fill(report_name)
 
-    # Select All Merchants
-    await page.evaluate("""() => {
+    # Open merchant dropdown — find the specific one with "Search Merchant" placeholder
+    merchant_select_opened = await page.evaluate("""() => {
         const phs = document.querySelectorAll('.ant-select-selection-placeholder');
         for (const ph of phs) {
             if (ph.textContent.includes('Search Merchant')) {
-                const sel = ph.closest('.ant-select');
-                if (sel) { sel.dispatchEvent(new MouseEvent('mousedown', {bubbles: true}));
-                           sel.dispatchEvent(new MouseEvent('click', {bubbles: true})); }
                 const selector = ph.closest('.ant-select-selector');
-                if (selector) selector.dispatchEvent(new MouseEvent('mousedown', {bubbles: true}));
+                if (selector) {
+                    selector.dispatchEvent(new MouseEvent('mousedown', {bubbles: true}));
+                    selector.dispatchEvent(new MouseEvent('click', {bubbles: true}));
+                    return true;
+                }
             }
         }
+        return false;
     }""")
-    await asyncio.sleep(5)
-    await page.evaluate("""() => {
-        for (const el of document.querySelectorAll('*')) {
-            if (el.textContent.trim() === 'Select all' && el.children.length === 0) {
-                const r = el.getBoundingClientRect();
-                if (r.width > 0) { el.click(); return; }
-            }
-        }
-    }""")
+    await asyncio.sleep(2)
+    if not merchant_select_opened:
+        logger.warning(f"  MID {mid}: could not open merchant dropdown")
+        return None
+
+    # Type MID into the merchant dropdown's search input — find the OPEN one only
+    typed_ok = await page.evaluate("""(mid) => {
+        // Pick the search input inside the currently OPEN dropdown's tied select wrapper
+        const open = document.querySelector('.ant-select-open');
+        const inp = open ? open.querySelector('input.ant-select-selection-search-input') : null;
+        if (!inp) return false;
+        inp.focus();
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        setter.call(inp, mid);
+        inp.dispatchEvent(new Event('input', {bubbles: true}));
+        return true;
+    }""", str(mid))
+    if not typed_ok:
+        # Fallback: try keyboard typing
+        await page.keyboard.type(str(mid), delay=80)
     await asyncio.sleep(3)
+
+    # Click matching option — handle BOTH tree-style (.ant-select-tree-title) and flat (.ant-select-item-option)
+    selected = await page.evaluate("""(mid) => {
+        // Try tree-style first
+        const treeNodes = document.querySelectorAll('.ant-select-tree-title');
+        for (const el of treeNodes) {
+            if (el.textContent.includes(mid)) {
+                // Find the checkbox or clickable parent and click that
+                const node = el.closest('.ant-select-tree-treenode') || el.closest('.ant-select-tree-node-content-wrapper') || el;
+                const cb = node.querySelector('.ant-select-tree-checkbox');
+                (cb || node).click();
+                return el.textContent.trim().substring(0, 80);
+            }
+        }
+        // Fallback: flat options
+        const opts = document.querySelectorAll('.ant-select-item-option');
+        for (const el of opts) {
+            if (el.textContent.includes(mid)) {
+                el.click();
+                return el.textContent.trim().substring(0, 80);
+            }
+        }
+        return null;
+    }""", str(mid))
+
+    if not selected:
+        logger.warning(f"  MID {mid}: not found in EB merchant dropdown")
+        # Try Escape to close dropdown so we don't break the form
+        try:
+            await page.keyboard.press('Escape')
+        except Exception:
+            pass
+        return None
+
+    logger.info(f"  MID {mid}: selected '{selected}'")
+    # Close dropdown
     await page.mouse.click(770, 280)
     await asyncio.sleep(2)
 
-    # Date range — last 30 days
+    # Date range — last 7 days
     today = datetime.now()
-    start = today - timedelta(days=30)
+    start = today - timedelta(days=7)
     for ph, date in [("Start date", start), ("End date", today)]:
         inp = await page.query_selector(f'input[placeholder="{ph}"]')
         if inp:
@@ -629,47 +700,85 @@ async def _eb_generate_settlement_report(page):
             if (btn.textContent.trim() === 'Generate') btn.click();
         });
     }""")
-    await asyncio.sleep(10)
+    await asyncio.sleep(8)
 
-    # Wait for report
-    for i in range(int(REPORT_WAIT_TIMEOUT / 5)):
-        await asyncio.sleep(5)
+    # Wait for report — small report, should be fast
+    found = False
+    for _ in range(int(REPORT_WAIT_TIMEOUT / 3)):
+        await asyncio.sleep(3)
         body = await page.inner_text('body')
-        if 'sanity_' in body.lower() and 'Success' in body:
+        if report_name.lower() in body.lower() and 'Success' in body:
+            found = True
             break
-        if i == 6:
-            await page.goto(f"{EB_PARTNER_URL}/custom-reports", wait_until="domcontentloaded")
-            await asyncio.sleep(5)
-            await page.evaluate("""() => {
-                document.querySelectorAll('div').forEach(el => {
-                    if (el.textContent.trim() === 'Merchant Settlements' && el.children.length === 0) {
-                        const r = el.getBoundingClientRect();
-                        if (r.width > 0 && r.height < 50) el.click();
-                    }
-                });
-            }""")
-            await asyncio.sleep(3)
 
-    # Download
+    if not found:
+        logger.warning(f"  MID {mid}: report did not become 'Success' in time")
+        return None
+
+    # Download — find the row with this report_name and click its download icon
     try:
-        async with page.expect_download(timeout=60000) as dl:
-            await page.evaluate("""() => {
+        async with page.expect_download(timeout=120000) as dl:
+            await page.evaluate("""(name) => {
+                // Find row containing this report name, then click its download icon
+                const rows = document.querySelectorAll('tr');
+                for (const row of rows) {
+                    if (row.textContent.includes(name)) {
+                        const icon = row.querySelector('[class*="download"]');
+                        if (icon) { icon.click(); return; }
+                    }
+                }
+                // Fallback: first download icon in viewport
                 const icons = document.querySelectorAll('[class*="download-icon"], [class*="download"]');
                 for (const icon of icons) {
                     const r = icon.getBoundingClientRect();
                     if (r.width > 0 && r.y > 200 && r.y < 400) { icon.click(); return; }
                 }
-            }""")
+            }""", report_name)
         download = await dl.value
-        path = 'config/settlement_report.csv'
+        path = f'/tmp/eb_report_{mid}.csv'
         await download.save_as(path)
-        return pd.read_csv(path, low_memory=False)
+        return path
     except Exception as e:
-        logger.error(f"Settlement download failed: {e}")
-        # Try loading existing report
-        if os.path.exists('config/settlement_report.csv'):
-            return pd.read_csv('config/settlement_report.csv', low_memory=False)
+        logger.warning(f"  MID {mid}: download failed: {e}")
+        return None
+
+
+async def _eb_generate_settlement_report(page, eb_mids=None):
+    """Generate per-merchant settlement reports and combine into one DataFrame."""
+    eb_mids = [str(m).strip() for m in (eb_mids or []) if str(m).strip()]
+    if not eb_mids:
+        logger.warning("No EB MIDs provided — cannot generate per-merchant reports")
         return pd.DataFrame()
+
+    logger.info(f"Generating per-merchant reports for {len(eb_mids)} MIDs")
+
+    combined_dfs = []
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+    for idx, mid in enumerate(eb_mids):
+        logger.info(f"[{idx+1}/{len(eb_mids)}] Processing MID {mid}")
+        await _eb_navigate_to_settlements(page)
+        report_name = f"sanity_{mid}_{timestamp}"
+        try:
+            csv_path = await _eb_generate_one_merchant_report(page, mid, report_name)
+            if csv_path and os.path.exists(csv_path):
+                df = pd.read_csv(csv_path, low_memory=False)
+                logger.info(f"  MID {mid}: loaded {len(df)} rows")
+                combined_dfs.append(df)
+        except Exception as e:
+            logger.warning(f"  MID {mid}: error — {e}")
+
+    if not combined_dfs:
+        logger.error("No per-merchant reports succeeded")
+        return pd.DataFrame()
+
+    combined = pd.concat(combined_dfs, ignore_index=True)
+    # Save combined for cache fallback in future runs
+    combined.to_csv('config/settlement_report.csv', index=False)
+    logger.info(f"Combined settlement report: {len(combined)} rows from {len(combined_dfs)} merchants")
+    return combined
+
+
 
 
 # ─── MAIN BATCH CHECK ────────────────────────────────────
@@ -802,11 +911,17 @@ async def run_batch_sanity_check(selected_date='', progress=None):
         if await _eb_login(eb_page):
             logger.info("EB login OK")
             update_progress('settlement')
+            # Collect EB MIDs from sheet — select only these merchants in report
+            eb_mids = []
+            for _, row in merchants_to_check.iterrows():
+                mid = _clean(row.get('EB MID', row.get('Mid', '')))
+                if mid:
+                    eb_mids.append(mid)
             try:
-                sr_df = await asyncio.wait_for(_eb_generate_settlement_report(eb_page), timeout=300)
+                sr_df = await asyncio.wait_for(_eb_generate_settlement_report(eb_page, eb_mids), timeout=900)
                 logger.info(f"Settlement report: {len(sr_df)} rows")
             except asyncio.TimeoutError:
-                logger.error("Settlement report timed out after 5 min — using cached CSV if available")
+                logger.error("Settlement report timed out after 15 min — using cached CSV if available")
                 if os.path.exists('config/settlement_report.csv'):
                     sr_df = pd.read_csv('config/settlement_report.csv', low_memory=False)
                     logger.info(f"Loaded cached settlement report: {len(sr_df)} rows")
@@ -911,7 +1026,7 @@ async def run_batch_sanity_check(selected_date='', progress=None):
             logger.info(f"GK login for {merchant_name}")
             if await _gk_login(gk_page):
                 await _gk_navigate_terminals(gk_page)
-                switched = await _gk_switch_merchant(gk_page, merchant_name)
+                switched = await _gk_switch_merchant(gk_page, merchant_name, mid)
                 if switched:
                     await _gk_navigate_terminals(gk_page)
                     c4 = await asyncio.wait_for(check_salt_key(gk_page, merchant_name, sheet_key, sheet_salt), timeout=CHECK_TIMEOUT)

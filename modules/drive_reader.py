@@ -13,7 +13,6 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive.readonly",
 ]
 
-
 def get_drive_service():
     """Authenticate and return Google Drive service."""
     creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
