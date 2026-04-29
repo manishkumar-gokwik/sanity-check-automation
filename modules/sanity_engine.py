@@ -1118,7 +1118,12 @@ async def run_batch_sanity_check(selected_date='', progress=None):
         tracker_dates['_parsed_date'] = pd.to_datetime(tracker_dates[date_col], format='mixed', dayfirst=True, errors='coerce')
 
         if selected_date:
-            target_date = pd.to_datetime(selected_date, format='mixed', dayfirst=True, errors='coerce')
+            # ISO format (YYYY-MM-DD) → parse without dayfirst (avoids 2026-04-12 → Dec 4 bug)
+            # Other formats (DD-MMM-YY, etc.) → use dayfirst
+            if re.match(r'^\d{4}-\d{2}-\d{2}', str(selected_date).strip()):
+                target_date = pd.to_datetime(selected_date, format='%Y-%m-%d', errors='coerce')
+            else:
+                target_date = pd.to_datetime(selected_date, format='mixed', dayfirst=True, errors='coerce')
             logger.info(f"[FILTER] User selected date: {selected_date} → parsed as {target_date.date() if pd.notna(target_date) else 'INVALID'}")
         else:
             target_date = pd.to_datetime(datetime.now().strftime('%Y-%m-%d')) - timedelta(days=1)
