@@ -428,17 +428,46 @@ async def check_vpa(gk_page, merchant_name):
 # ─── GK DASHBOARD HELPERS ────────────────────────────────
 
 async def _gk_login(page):
-    """Login to GK Dashboard with auto OTP."""
+    """Login to GK Dashboard with auto OTP. Handles both old (2-step) and new (1-step) login UI."""
+    logger.info(f"    GK login: navigating to {GK_DASHBOARD_URL}/login")
     await page.goto(f"{GK_DASHBOARD_URL}/login")
     await asyncio.sleep(5)
-    await (await page.query_selector('input[type="email"]')).fill(GK_EMAIL)
-    await page.click('button:has-text("Next")')
-    await asyncio.sleep(5)
-    pi = await page.query_selector('input[type="password"]')
-    if pi and await pi.is_visible():
-        await pi.fill(GK_PASS)
+    logger.info(f"    GK login: page loaded, URL={page.url}")
+
+    # Fill email
+    email_input = await page.query_selector('input[type="email"]')
+    if email_input:
+        await email_input.fill(GK_EMAIL)
+        await asyncio.sleep(1)
+        logger.info(f"    GK login: email filled")
+    else:
+        logger.warning(f"    GK login: email input NOT found")
+
+    # Try to fill password on the SAME page (new GK UI)
+    pwd_input = await page.query_selector('input[type="password"]')
+    if pwd_input and await pwd_input.is_visible():
+        logger.info(f"    GK login: password field visible (new 1-step UI)")
+        await pwd_input.fill(GK_PASS)
+        await asyncio.sleep(1)
+        # Click Next once — both fields filled
         await page.click('button:has-text("Next")')
         await asyncio.sleep(5)
+        logger.info(f"    GK login: clicked Next, URL={page.url}")
+    else:
+        logger.info(f"    GK login: no password field on first page (old 2-step UI)")
+        # Old 2-step UI: click Next, then fill password on next screen
+        await page.click('button:has-text("Next")')
+        await asyncio.sleep(5)
+        logger.info(f"    GK login: clicked first Next, URL={page.url}")
+        pwd_input = await page.query_selector('input[type="password"]')
+        if pwd_input and await pwd_input.is_visible():
+            await pwd_input.fill(GK_PASS)
+            await page.click('button:has-text("Next")')
+            await asyncio.sleep(5)
+            logger.info(f"    GK login: filled password and clicked Next, URL={page.url}")
+        else:
+            logger.warning(f"    GK login: password field NOT visible after first Next, URL={page.url}")
+
     if "verify-otp" in page.url:
         otp = _fetch_gk_otp()
         logger.info(f"GK OTP: {otp}")
@@ -460,10 +489,11 @@ async def _gk_login(page):
     if "verify-otp" in page.url or "login" in page.url:
         try:
             await page.screenshot(path='config/gk_login_failed.png', full_page=True)
-            logger.error(f"GK login failed at URL: {page.url} — screenshot saved")
+            logger.error(f"    GK login FAILED at URL: {page.url} — screenshot saved to config/gk_login_failed.png")
         except Exception:
             pass
         return False
+    logger.info(f"    GK login: success, landed at URL={page.url}")
     return True
 
 
@@ -491,6 +521,7 @@ async def _gk_ensure_logged_in(page):
 
 async def _gk_switch_merchant(page, merchant_name, mid=''):
     """Switch merchant in GK Dashboard. Searches by MID (primary) then merchant name (fallback)."""
+    logger.info(f"    GK switch: starting for merchant='{merchant_name}', mid='{mid}', URL={page.url}")
     try:
         await page.keyboard.press('Escape')
         await asyncio.sleep(0.5)
@@ -501,10 +532,126 @@ async def _gk_switch_merchant(page, merchant_name, mid=''):
         logger.warning(f"Could not re-login before switching to {merchant_name}")
         return False
 
+    # Newer GK UI: merchant switcher is opened via the header dropdown showing the
+    # current merchant name (e.g. "gokwikproduction2"), not a "Switch merchant" link.
+    # Save a "before" screenshot + dump top-right candidates for debug.
     try:
-        await page.locator('text=Switch merchant').first.click(timeout=10000)
+        await page.screenshot(path='config/gk_switch_before.png', full_page=True)
     except Exception:
-        logger.warning(f"Switch merchant button not clickable for {merchant_name}")
+        pass
+    try:
+        topright = await page.evaluate("""() => {
+            const out = [];
+            for (const el of document.querySelectorAll('*')) {
+                if (!el || el.children.length > 6) continue;
+                const r = el.getBoundingClientRect();
+                if (r.y < 0 || r.y > 100 || r.x < window.innerWidth * 0.55) continue;
+                if (r.width < 40 || r.width > 400 || r.height < 18 || r.height > 80) continue;
+                const text = (el.textContent || '').trim();
+                if (!text || text.length > 60) continue;
+                out.push({tag: el.tagName, cls: (el.className || '').toString().substring(0,80), text: text.substring(0,60), x: Math.round(r.left + r.width/2), y: Math.round(r.top + r.height/2)});
+                if (out.length > 12) break;
+            }
+            return out;
+        }""")
+        logger.info(f"    GK switch: top-right header candidates ({len(topright)}):")
+        for c in topright:
+            logger.info(f"      <{c.get('tag')}> cls='{c.get('cls')}' text='{c.get('text')}' @({c.get('x')},{c.get('y')})")
+    except Exception as e:
+        logger.warning(f"    GK switch: header dump failed: {e}")
+
+    clicked = False
+
+    # Strategy 1 — explicit "Switch merchant" text (older UI / sidebar / dropdown menu item)
+    for selector_text in ['Switch merchant', 'Switch Merchant', 'Change merchant']:
+        try:
+            await page.locator(f'text={selector_text}').first.click(timeout=2000)
+            logger.info(f"    GK switch: clicked '{selector_text}' link (strategy 1)")
+            clicked = True
+            break
+        except Exception:
+            continue
+
+    # Strategy 2 — click the header merchant dropdown (top-right corner). Try clicking
+    # whichever element in the top-right has text + appears clickable, then look for
+    # a "Switch Merchant" option in the resulting menu, OR detect a modal opening.
+    if not clicked:
+        try:
+            opened = await page.evaluate("""() => {
+                const sels = [
+                    '.ant-dropdown-trigger',
+                    '[class*="merchant"]',
+                    '[class*="dropdown"]',
+                    '[class*="select"]',
+                    '[class*="profile"]',
+                    '[class*="avatar"]',
+                    '[role="button"]',
+                    'button',
+                    'header *',
+                ];
+                const candidates = [];
+                const seen = new Set();
+                for (const sel of sels) {
+                    for (const el of document.querySelectorAll(sel)) {
+                        if (seen.has(el)) continue;
+                        seen.add(el);
+                        const r = el.getBoundingClientRect();
+                        if (r.y < 0 || r.y > 100 || r.x < window.innerWidth * 0.55) continue;
+                        if (r.width < 40 || r.width > 400 || r.height < 18 || r.height > 80) continue;
+                        const text = (el.textContent || '').trim();
+                        if (text.length > 80) continue;
+                        const cls = (el.className || '').toString();
+                        candidates.push({x: Math.round(r.left + r.width/2), y: Math.round(r.top + r.height/2), text, sel, cls: cls.substring(0,60), tag: el.tagName});
+                    }
+                }
+                // Order: rightmost first (the merchant indicator is usually furthest right).
+                candidates.sort((a, b) => b.x - a.x);
+                return candidates.slice(0, 6);
+            }""")
+            logger.info(f"    GK switch: trying {len(opened)} top-right candidates (strategy 2)")
+            for cand in opened:
+                logger.info(f"    GK switch: clicking <{cand.get('tag')}> '{cand.get('text','')[:40]}' @({cand['x']},{cand['y']}) sel='{cand.get('sel')}'")
+                try:
+                    await page.mouse.click(cand['x'], cand['y'])
+                    await asyncio.sleep(2)
+                except Exception as e:
+                    logger.warning(f"      click failed: {e}")
+                    continue
+                # Check if a menu/modal opened
+                for opt in ['Switch Merchant', 'Switch merchant', 'Change Merchant', 'Change merchant']:
+                    try:
+                        await page.locator(f'text={opt}').first.click(timeout=1500)
+                        logger.info(f"    GK switch: clicked '{opt}' from header menu")
+                        clicked = True
+                        break
+                    except Exception:
+                        continue
+                if clicked:
+                    break
+                # OR — modal opened directly with search input
+                try:
+                    modal_open = await page.query_selector('.ant-modal-body, .gk-text-input')
+                    if modal_open:
+                        logger.info(f"    GK switch: candidate opened modal directly")
+                        clicked = True
+                        break
+                except Exception:
+                    pass
+                # Otherwise, dismiss any partially-opened popup and try next candidate
+                try:
+                    await page.keyboard.press('Escape')
+                    await asyncio.sleep(0.5)
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.warning(f"    GK switch: header dropdown loop failed: {e}")
+
+    if not clicked:
+        try:
+            await page.screenshot(path='config/gk_switch_failed.png', full_page=True)
+            logger.warning(f"    GK switch: button not clickable for {merchant_name} (URL={page.url}) — screenshot saved to config/gk_switch_failed.png")
+        except Exception:
+            logger.warning(f"    GK switch: button not clickable for {merchant_name} (URL={page.url})")
         return False
     await asyncio.sleep(5)
 
@@ -517,7 +664,7 @@ async def _gk_switch_merchant(page, merchant_name, mid=''):
             pass
         return False
 
-    # Search terms: MID first (exact match), then merchant name as fallback
+    # Search terms: MID first (primary — most reliable), then merchant name as fallback
     search_terms = []
     mid_str = str(mid).strip() if mid else ''
     if mid_str:
@@ -527,9 +674,12 @@ async def _gk_switch_merchant(page, merchant_name, mid=''):
         if len(merchant_name) > 5:
             search_terms.append(('name', merchant_name[:5]))
 
+    logger.info(f"    GK switch: search plan = {search_terms}")
+
     clicked = False
     for term_type, term in search_terms:
         try:
+            logger.info(f"    GK switch: trying {term_type}='{term}'")
             await page.click('.gk-text-input', timeout=10000, force=True)
             await asyncio.sleep(0.5)
             await page.keyboard.press('Control+a')
@@ -538,44 +688,54 @@ async def _gk_switch_merchant(page, merchant_name, mid=''):
             await page.fill('.gk-text-input', term, timeout=10000)
             await asyncio.sleep(4)
 
-            # Find result — MID match shows like "MerchantName (66450)shopify"
+            # Find result — MID match looks for the MID anywhere with non-digit boundaries.
+            # Format examples seen: "Murphy (17069)shopify", "Murphy - 17069 - shopify"
             r = await page.evaluate("""({term, termType, name}) => {
                 const lower = (name || '').toLowerCase();
                 const lowerNoSpace = lower.replace(/\\s+/g, '');
-                const midPattern = `(${term})`;
-                for (const el of document.querySelectorAll('.ant-modal-body div, .ant-modal-body label')) {
+                // Boundary-aware MID match: digit sequence not adjacent to other digits
+                const midRegex = new RegExp('(^|[^0-9])' + term + '([^0-9]|$)');
+                const candidates = [];
+                for (const el of document.querySelectorAll('.ant-modal-body div, .ant-modal-body label, .ant-modal-body span')) {
                     const text = el.textContent.trim();
+                    if (!text || text.length > 200) continue;
                     const textLower = text.toLowerCase();
                     const textNoSpace = textLower.replace(/\\s+/g, '');
                     let match = false;
                     if (termType === 'mid') {
-                        match = text.includes(midPattern);
+                        match = midRegex.test(text);
                     } else {
                         match = lower && (textLower.includes(lower) || textNoSpace.includes(lowerNoSpace));
                     }
                     if (match && el.children.length <= 5) {
                         const r = el.getBoundingClientRect();
                         if (r.width > 100 && r.height > 15 && r.height < 80 && r.y > 200) {
-                            return {x: r.left + 20, y: r.top + r.height / 2, text: text.substring(0, 60)};
+                            candidates.push({x: r.left + 20, y: r.top + r.height / 2, text: text.substring(0, 80)});
                         }
                     }
                 }
-                return null;
+                return candidates.length > 0 ? candidates[0] : {candidates: 0, _debug: 'no match'};
             }""", {"term": term, "termType": term_type, "name": merchant_name})
 
-            if r:
-                logger.info(f"Found merchant '{merchant_name}' via {term_type}='{term}': {r.get('text', '')}")
+            if r and r.get('x') is not None:
+                logger.info(f"    GK switch: found merchant via {term_type}='{term}': {r.get('text', '')}")
                 await page.mouse.click(r['x'], r['y'])
                 await asyncio.sleep(2)
                 clicked = True
                 break
+            else:
+                logger.warning(f"    GK switch: no match for {term_type}='{term}' in modal")
         except Exception as e:
-            logger.warning(f"Search '{term}' ({term_type}) failed: {e}")
+            logger.warning(f"    GK switch: search '{term}' ({term_type}) raised: {e}")
             continue
 
     if not clicked:
-        logger.warning(f"No search result found for {merchant_name} (tried: {search_terms})")
-        # Close modal
+        logger.warning(f"    GK switch: no search result found for {merchant_name} (tried: {search_terms})")
+        try:
+            await page.screenshot(path='config/gk_switch_no_result.png', full_page=True)
+            logger.warning(f"    GK switch: screenshot saved to config/gk_switch_no_result.png")
+        except Exception:
+            pass
         try:
             await page.keyboard.press('Escape')
             await asyncio.sleep(2)
@@ -1387,8 +1547,22 @@ async def run_batch_sanity_check(selected_date='', progress=None):
                 c4 = _make_check("SALT & KEY", "WARN",
                                "Reason: GK Dashboard login failed.")
         except asyncio.TimeoutError:
+            logger.error(f"  [CHECK 4/5] SALT & KEY timed out after {CHECK_TIMEOUT}s")
+            if gk_page:
+                try:
+                    await gk_page.screenshot(path='config/gk_saltkey_timeout.png', full_page=True)
+                    logger.error(f"    Page URL at timeout: {gk_page.url} — screenshot saved to config/gk_saltkey_timeout.png")
+                except Exception:
+                    pass
             c4 = c4 or _make_check("SALT & KEY", "FAIL", "Reason: Request timed out.")
         except Exception as e:
+            logger.exception(f"  [CHECK 4/5] SALT & KEY exception: {type(e).__name__}: {e}")
+            if gk_page:
+                try:
+                    await gk_page.screenshot(path='config/gk_saltkey_exception.png', full_page=True)
+                    logger.error(f"    Page URL at exception: {gk_page.url} — screenshot saved to config/gk_saltkey_exception.png")
+                except Exception:
+                    pass
             c4 = c4 or _make_check("SALT & KEY", "FAIL", f"Reason: An error occurred — {str(e)[:80]}")
         finally:
             if gk_browser:
