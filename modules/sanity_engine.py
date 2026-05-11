@@ -1294,6 +1294,24 @@ async def run_batch_sanity_check(selected_date='', progress=None):
             prev_day_merchants = tracker_dates[tracker_dates['_parsed_date'].dt.date == target_date.date()]
             prev_day_merchants = prev_day_merchants[prev_day_merchants[name_col].astype(str).str.strip() != '']
             logger.info(f"[FILTER] Merchants matching date {target_date.date()}: {len(prev_day_merchants)}")
+
+            # Skip merchants whose check columns are ALL already filled with any value
+            # (yes / no / warn / fail / pass). Only re-process merchants with at least
+            # one empty check column — never overwrite existing results.
+            if check_cols and not prev_day_merchants.empty:
+                def has_empty_check(row):
+                    for col in check_cols:
+                        v = str(row.get(col, '')).strip().lower()
+                        if v in ('', 'nan', 'none'):
+                            return True
+                    return False
+
+                before = len(prev_day_merchants)
+                prev_day_merchants = prev_day_merchants[prev_day_merchants.apply(has_empty_check, axis=1)]
+                skipped = before - len(prev_day_merchants)
+                if skipped:
+                    logger.info(f"[FILTER] Skipped {skipped} merchants whose check columns are already filled — {len(prev_day_merchants)} remaining")
+
             if not prev_day_merchants.empty:
                 names = prev_day_merchants[name_col].tolist()
                 logger.info(f"[FILTER] Names: {names}")
@@ -1309,10 +1327,14 @@ async def run_batch_sanity_check(selected_date='', progress=None):
     if selected_date:
         logger.info("[FILTER] Specific date selected → SKIPPING 'incomplete merchants' fallback")
     elif check_cols:
+        # A merchant is "incomplete" ONLY when one of its check columns is truly empty.
+        # If the cell already contains any value (yes / no / warn / fail / pass / etc.),
+        # we treat it as already processed and skip the merchant — the user explicitly
+        # asked that previously-written results should never be overwritten.
         def is_incomplete(row):
             for col in check_cols:
                 val = str(row.get(col, '')).strip().lower()
-                if val in ('', 'no', 'warn', 'nan', 'none'):
+                if val in ('', 'nan', 'none'):
                     return True
             return False
 
