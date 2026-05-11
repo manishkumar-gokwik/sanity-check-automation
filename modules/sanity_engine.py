@@ -115,7 +115,7 @@ async def check_settlement(sr_df, eb_mid, merchant_name):
             return _make_check("Settlement", "WARN",
                              f"Reason: No transactions found for EB MID {eb_mid}. This merchant may be new or has no transactions yet.",
                              expected=f"Transactions for EB MID {eb_mid}",
-                             actual="No transactions in last 30 days")
+                             actual="No transactions in last 7 days")
 
         total_amt = pd.to_numeric(txns.get('Transaction Settlement Amount', 0), errors='coerce').sum()
         acct = str(txns.iloc[0].get('Settlement Account Number', '')).replace('.0', '').strip()
@@ -1435,165 +1435,184 @@ async def run_batch_sanity_check(selected_date='', progress=None):
     ]
 
     # ═══ PHASE 3: Run checks per merchant ═══
+    # Every merchant iteration is wrapped in a top-level try/except so that
+    # an unexpected failure for ONE merchant never aborts the batch — the
+    # loop continues to the next merchant and records a FAIL for the broken one.
     for idx, row in merchants_to_check.iterrows():
-        merchant_name = _clean(row.get('Merchant Name', row.get(name_col, '')))
-        eb_mid = _clean(row.get('EB MID', row.get('Mid', '')))
-        mid = _clean(row.get('MID', row.get('Mid', '')))
-        if not merchant_name:
-            continue
-
-        logger.info("─" * 70)
-        logger.info(f"[MERCHANT {idx+1}/{len(merchants_to_check)}] {merchant_name} (EB MID={eb_mid}, GK MID={mid})")
-        update_progress('mdr', merchant_name, idx+1, len(merchants_to_check))
-        checks = []
-
-        # Get expected rates from commercial sheet
-        expected_rates = {'upi': '', 'cc': '', 'dc': ''}
-        if not sample.empty:
-            comm_row = sample[sample['Merchant Name'].astype(str).str.lower() == merchant_name.lower()]
-            if not comm_row.empty:
-                cr = comm_row.iloc[0]
-                expected_rates = {
-                    'upi': _clean(cr.get('UPI', '')),
-                    'cc': _clean(cr.get('CC', '')),
-                    'dc': _clean(cr.get('DC below 2K', '')),
-                }
-                if not eb_mid:
-                    eb_mid = _clean(cr.get('EB MID', ''))
-        logger.info(f"  Expected MDR rates: UPI={expected_rates['upi']}, CC={expected_rates['cc']}, DC={expected_rates['dc']}")
-
-        # Get SALT & KEY from sheet
-        sk = sk_df[sk_df['Merchant Name'].astype(str).str.lower().str.strip() == merchant_name.lower()]
-        if sk.empty and mid:
-            sk = sk_df[sk_df['MID'].astype(str).str.strip() == mid]
-        sheet_key = str(sk.iloc[0].get('KEY', '')).strip() if not sk.empty else ''
-        sheet_salt = str(sk.iloc[0].get('SALT', '')).strip() if not sk.empty else ''
-        if not eb_mid and not sk.empty:
-            eb_mid = _clean(sk.iloc[0].get('MID', ''))
-        logger.info(f"  Sheet KEY={sheet_key or '(empty)'} | SALT={sheet_salt or '(empty)'}")
-
-        # Check 1: Settlement
-        logger.info(f"  [CHECK 1/5] Settlement …")
+        merchant_name = ''
+        eb_mid = ''
         try:
-            c1 = await asyncio.wait_for(check_settlement(sr_df, eb_mid, merchant_name), timeout=CHECK_TIMEOUT)
-        except asyncio.TimeoutError:
-            c1 = _make_check("Settlement", "FAIL", "Timed out")
-        except Exception as e:
-            c1 = _make_check("Settlement", "FAIL", str(e)[:80])
-        logger.info(f"  [CHECK 1/5] Settlement → {c1.get('status')}: {c1.get('message', '')[:100]}")
-        checks.append(c1)
+            merchant_name = _clean(row.get('Merchant Name', row.get(name_col, '')))
+            eb_mid = _clean(row.get('EB MID', row.get('Mid', '')))
+            mid = _clean(row.get('MID', row.get('Mid', '')))
+            if not merchant_name:
+                continue
 
-        # Check 2: MDR
-        logger.info(f"  [CHECK 2/5] MDR …")
-        try:
-            c2 = await asyncio.wait_for(check_mdr(sr_df, eb_mid, expected_rates, merchant_name), timeout=CHECK_TIMEOUT)
-        except asyncio.TimeoutError:
-            c2 = _make_check("MDR", "FAIL", "Timed out")
-        except Exception as e:
-            c2 = _make_check("MDR", "FAIL", str(e)[:80])
-        logger.info(f"  [CHECK 2/5] MDR → {c2.get('status')}: {c2.get('message', '')[:100]}")
-        checks.append(c2)
+            logger.info("─" * 70)
+            logger.info(f"[MERCHANT {idx+1}/{len(merchants_to_check)}] {merchant_name} (EB MID={eb_mid}, GK MID={mid})")
+            update_progress('mdr', merchant_name, idx+1, len(merchants_to_check))
+            checks = []
 
-        # Check 3: Account Number
-        logger.info(f"  [CHECK 3/5] Account Number (Drive cheque + Gemini) …")
-        update_progress('account', merchant_name, idx+1, len(sample))
-        try:
-            c3 = await asyncio.wait_for(check_account_number(sr_df, eb_mid, merchant_name), timeout=CHECK_TIMEOUT)
-        except asyncio.TimeoutError:
-            c3 = _make_check("Account Number", "FAIL", "Timed out")
-        except Exception as e:
-            c3 = _make_check("Account Number", "FAIL", str(e)[:80])
-        logger.info(f"  [CHECK 3/5] Account Number → {c3.get('status')}: {c3.get('message', '')[:100]}")
-        checks.append(c3)
+            # Get expected rates from commercial sheet
+            expected_rates = {'upi': '', 'cc': '', 'dc': ''}
+            if not sample.empty:
+                comm_row = sample[sample['Merchant Name'].astype(str).str.lower() == merchant_name.lower()]
+                if not comm_row.empty:
+                    cr = comm_row.iloc[0]
+                    expected_rates = {
+                        'upi': _clean(cr.get('UPI', '')),
+                        'cc': _clean(cr.get('CC', '')),
+                        'dc': _clean(cr.get('DC below 2K', '')),
+                    }
+                    if not eb_mid:
+                        eb_mid = _clean(cr.get('EB MID', ''))
+            logger.info(f"  Expected MDR rates: UPI={expected_rates['upi']}, CC={expected_rates['cc']}, DC={expected_rates['dc']}")
 
-        # Checks 4 & 5: SALT & KEY + VPA — fresh GK browser + login for this merchant
-        logger.info(f"  [CHECK 4/5] SALT & KEY (GK Dashboard) — fresh browser+login …")
-        update_progress('saltkey', merchant_name, idx+1, len(sample))
-        gk_browser = None
-        gk_page = None
-        c4 = None
-        c5 = None
-        try:
-            gk_browser = await pw.chromium.launch(headless=HEADLESS, args=gk_browser_args)
-            gk_page = await (await gk_browser.new_context(
-                viewport={"width": 1366, "height": 768}
-            )).new_page()
-            gk_page.set_default_timeout(BROWSER_TIMEOUT)
+            # Get SALT & KEY from sheet
+            sk = sk_df[sk_df['Merchant Name'].astype(str).str.lower().str.strip() == merchant_name.lower()]
+            if sk.empty and mid:
+                sk = sk_df[sk_df['MID'].astype(str).str.strip() == mid]
+            sheet_key = str(sk.iloc[0].get('KEY', '')).strip() if not sk.empty else ''
+            sheet_salt = str(sk.iloc[0].get('SALT', '')).strip() if not sk.empty else ''
+            if not eb_mid and not sk.empty:
+                eb_mid = _clean(sk.iloc[0].get('MID', ''))
+            logger.info(f"  Sheet KEY={sheet_key or '(empty)'} | SALT={sheet_salt or '(empty)'}")
 
-            if await _gk_login(gk_page):
-                logger.info(f"    GK login OK → navigating to Terminals")
-                await _gk_navigate_terminals(gk_page)
-                switched = await _gk_switch_merchant(gk_page, merchant_name, mid)
-                if switched:
-                    logger.info(f"    Switched to merchant in GK → checking SALT & KEY")
+            # Check 1: Settlement
+            logger.info(f"  [CHECK 1/5] Settlement …")
+            try:
+                c1 = await asyncio.wait_for(check_settlement(sr_df, eb_mid, merchant_name), timeout=CHECK_TIMEOUT)
+            except asyncio.TimeoutError:
+                c1 = _make_check("Settlement", "FAIL", "Timed out")
+            except Exception as e:
+                c1 = _make_check("Settlement", "FAIL", str(e)[:80])
+            logger.info(f"  [CHECK 1/5] Settlement → {c1.get('status')}: {c1.get('message', '')[:100]}")
+            checks.append(c1)
+
+            # Check 2: MDR
+            logger.info(f"  [CHECK 2/5] MDR …")
+            try:
+                c2 = await asyncio.wait_for(check_mdr(sr_df, eb_mid, expected_rates, merchant_name), timeout=CHECK_TIMEOUT)
+            except asyncio.TimeoutError:
+                c2 = _make_check("MDR", "FAIL", "Timed out")
+            except Exception as e:
+                c2 = _make_check("MDR", "FAIL", str(e)[:80])
+            logger.info(f"  [CHECK 2/5] MDR → {c2.get('status')}: {c2.get('message', '')[:100]}")
+            checks.append(c2)
+
+            # Check 3: Account Number
+            logger.info(f"  [CHECK 3/5] Account Number (Drive cheque + Gemini) …")
+            update_progress('account', merchant_name, idx+1, len(sample))
+            try:
+                c3 = await asyncio.wait_for(check_account_number(sr_df, eb_mid, merchant_name), timeout=CHECK_TIMEOUT)
+            except asyncio.TimeoutError:
+                c3 = _make_check("Account Number", "FAIL", "Timed out")
+            except Exception as e:
+                c3 = _make_check("Account Number", "FAIL", str(e)[:80])
+            logger.info(f"  [CHECK 3/5] Account Number → {c3.get('status')}: {c3.get('message', '')[:100]}")
+            checks.append(c3)
+
+            # Checks 4 & 5: SALT & KEY + VPA — fresh GK browser + login for this merchant
+            logger.info(f"  [CHECK 4/5] SALT & KEY (GK Dashboard) — fresh browser+login …")
+            update_progress('saltkey', merchant_name, idx+1, len(sample))
+            gk_browser = None
+            gk_page = None
+            c4 = None
+            c5 = None
+            try:
+                gk_browser = await pw.chromium.launch(headless=HEADLESS, args=gk_browser_args)
+                gk_page = await (await gk_browser.new_context(
+                    viewport={"width": 1366, "height": 768}
+                )).new_page()
+                gk_page.set_default_timeout(BROWSER_TIMEOUT)
+
+                if await _gk_login(gk_page):
+                    logger.info(f"    GK login OK → navigating to Terminals")
                     await _gk_navigate_terminals(gk_page)
-                    c4 = await asyncio.wait_for(check_salt_key(gk_page, merchant_name, sheet_key, sheet_salt), timeout=CHECK_TIMEOUT)
-                    logger.info(f"  [CHECK 4/5] SALT & KEY → {c4.get('status')}: {c4.get('message', '')[:100]}")
-                    update_progress('vpa', merchant_name, idx+1, len(sample))
-                    logger.info(f"  [CHECK 5/5] VPA / Webhook …")
-                    try:
-                        c5 = await asyncio.wait_for(check_vpa(gk_page, merchant_name), timeout=CHECK_TIMEOUT)
-                    except asyncio.TimeoutError:
-                        c5 = _make_check("VPA / Webhook", "FAIL", "Timed out")
-                    except Exception as e:
-                        c5 = _make_check("VPA / Webhook", "FAIL", str(e)[:80])
-                    logger.info(f"  [CHECK 5/5] VPA / Webhook → {c5.get('status')}: {c5.get('message', '')[:100]}")
+                    switched = await _gk_switch_merchant(gk_page, merchant_name, mid)
+                    if switched:
+                        logger.info(f"    Switched to merchant in GK → checking SALT & KEY")
+                        await _gk_navigate_terminals(gk_page)
+                        c4 = await asyncio.wait_for(check_salt_key(gk_page, merchant_name, sheet_key, sheet_salt), timeout=CHECK_TIMEOUT)
+                        logger.info(f"  [CHECK 4/5] SALT & KEY → {c4.get('status')}: {c4.get('message', '')[:100]}")
+                        update_progress('vpa', merchant_name, idx+1, len(sample))
+                        logger.info(f"  [CHECK 5/5] VPA / Webhook …")
+                        try:
+                            c5 = await asyncio.wait_for(check_vpa(gk_page, merchant_name), timeout=CHECK_TIMEOUT)
+                        except asyncio.TimeoutError:
+                            c5 = _make_check("VPA / Webhook", "FAIL", "Timed out")
+                        except Exception as e:
+                            c5 = _make_check("VPA / Webhook", "FAIL", str(e)[:80])
+                        logger.info(f"  [CHECK 5/5] VPA / Webhook → {c5.get('status')}: {c5.get('message', '')[:100]}")
+                    else:
+                        logger.warning(f"    Could not switch to merchant in GK Dashboard")
+                        c4 = _make_check("SALT & KEY", "WARN",
+                                       f"Reason: Could not switch to merchant '{merchant_name}' in GK Dashboard. The merchant name may be different in production.")
                 else:
-                    logger.warning(f"    Could not switch to merchant in GK Dashboard")
+                    logger.error(f"    GK login FAILED")
                     c4 = _make_check("SALT & KEY", "WARN",
-                                   f"Reason: Could not switch to merchant '{merchant_name}' in GK Dashboard. The merchant name may be different in production.")
-            else:
-                logger.error(f"    GK login FAILED")
-                c4 = _make_check("SALT & KEY", "WARN",
-                               "Reason: GK Dashboard login failed.")
-        except asyncio.TimeoutError:
-            logger.error(f"  [CHECK 4/5] SALT & KEY timed out after {CHECK_TIMEOUT}s")
-            if gk_page:
-                try:
-                    await gk_page.screenshot(path='config/gk_saltkey_timeout.png', full_page=True)
-                    logger.error(f"    Page URL at timeout: {gk_page.url} — screenshot saved to config/gk_saltkey_timeout.png")
-                except Exception:
-                    pass
-            c4 = c4 or _make_check("SALT & KEY", "FAIL", "Reason: Request timed out.")
+                                   "Reason: GK Dashboard login failed.")
+            except asyncio.TimeoutError:
+                logger.error(f"  [CHECK 4/5] SALT & KEY timed out after {CHECK_TIMEOUT}s")
+                if gk_page:
+                    try:
+                        await gk_page.screenshot(path='config/gk_saltkey_timeout.png', full_page=True)
+                        logger.error(f"    Page URL at timeout: {gk_page.url} — screenshot saved to config/gk_saltkey_timeout.png")
+                    except Exception:
+                        pass
+                c4 = c4 or _make_check("SALT & KEY", "FAIL", "Reason: Request timed out.")
+            except Exception as e:
+                logger.exception(f"  [CHECK 4/5] SALT & KEY exception: {type(e).__name__}: {e}")
+                if gk_page:
+                    try:
+                        await gk_page.screenshot(path='config/gk_saltkey_exception.png', full_page=True)
+                        logger.error(f"    Page URL at exception: {gk_page.url} — screenshot saved to config/gk_saltkey_exception.png")
+                    except Exception:
+                        pass
+                c4 = c4 or _make_check("SALT & KEY", "FAIL", f"Reason: An error occurred — {str(e)[:80]}")
+            finally:
+                if gk_browser:
+                    try:
+                        await gk_browser.close()
+                    except Exception:
+                        pass
+
+            if c4 is None:
+                c4 = _make_check("SALT & KEY", "WARN", "Reason: GK Dashboard not reachable.")
+            if c5 is None:
+                c5 = _make_check("VPA / Webhook", "WARN", "GK Dashboard not available")
+            checks.append(c4)
+            checks.append(c5)
+
+            # Overall
+            statuses = [c["status"] for c in checks]
+            pass_count = sum(1 for s in statuses if s == "PASS")
+            fail_count = sum(1 for s in statuses if s == "FAIL")
+            overall = "FAIL" if fail_count > 0 else "PASS" if pass_count == len(checks) else "WARN"
+            logger.info(f"[MERCHANT {idx+1}/{len(merchants_to_check)}] {merchant_name} → OVERALL {overall} ({pass_count}/{len(checks)} passed)")
+
+            batch_results.append({
+                "merchant_name": merchant_name,
+                "eb_mid": eb_mid,
+                "date": latest_date,
+                "overall_status": overall,
+                "pass_count": pass_count,
+                "total_checks": len(checks),
+                "checks": checks,
+            })
         except Exception as e:
-            logger.exception(f"  [CHECK 4/5] SALT & KEY exception: {type(e).__name__}: {e}")
-            if gk_page:
-                try:
-                    await gk_page.screenshot(path='config/gk_saltkey_exception.png', full_page=True)
-                    logger.error(f"    Page URL at exception: {gk_page.url} — screenshot saved to config/gk_saltkey_exception.png")
-                except Exception:
-                    pass
-            c4 = c4 or _make_check("SALT & KEY", "FAIL", f"Reason: An error occurred — {str(e)[:80]}")
-        finally:
-            if gk_browser:
-                try:
-                    await gk_browser.close()
-                except Exception:
-                    pass
-
-        if c4 is None:
-            c4 = _make_check("SALT & KEY", "WARN", "Reason: GK Dashboard not reachable.")
-        if c5 is None:
-            c5 = _make_check("VPA / Webhook", "WARN", "GK Dashboard not available")
-        checks.append(c4)
-        checks.append(c5)
-
-        # Overall
-        statuses = [c["status"] for c in checks]
-        pass_count = sum(1 for s in statuses if s == "PASS")
-        fail_count = sum(1 for s in statuses if s == "FAIL")
-        overall = "FAIL" if fail_count > 0 else "PASS" if pass_count == len(checks) else "WARN"
-        logger.info(f"[MERCHANT {idx+1}/{len(merchants_to_check)}] {merchant_name} → OVERALL {overall} ({pass_count}/{len(checks)} passed)")
-
-        batch_results.append({
-            "merchant_name": merchant_name,
-            "eb_mid": eb_mid,
-            "date": latest_date,
-            "overall_status": overall,
-            "pass_count": pass_count,
-            "total_checks": len(checks),
-            "checks": checks,
-        })
+            # Catch-all: an unexpected error for ONE merchant must not stop the whole batch.
+            logger.exception(f"[MERCHANT {idx+1}/{len(merchants_to_check)}] {merchant_name or '(unknown)'} — unexpected error: {type(e).__name__}: {e}")
+            batch_results.append({
+                "merchant_name": merchant_name or f"row_{idx}",
+                "eb_mid": eb_mid,
+                "date": latest_date,
+                "overall_status": "FAIL",
+                "pass_count": 0,
+                "total_checks": 5,
+                "checks": [_make_check("Batch", "FAIL", f"Reason: Unexpected error — {type(e).__name__}: {str(e)[:80]}")],
+            })
+            continue
 
     # Cleanup
     await pw.stop()
