@@ -1273,6 +1273,7 @@ async def run_batch_sanity_check(selected_date='', progress=None):
                 logger.info(f"[FILTER] No 'Date' header — auto-detected first column '{first_col}' as date column (sample: {sample[0]})")
 
     prev_day_merchants = pd.DataFrame()
+    tracker_dates = None
     if date_col:
         tracker_dates = tracker.copy()
         tracker_dates['_parsed_date'] = pd.to_datetime(tracker_dates[date_col], format='mixed', dayfirst=True, errors='coerce')
@@ -1301,7 +1302,9 @@ async def run_batch_sanity_check(selected_date='', progress=None):
     else:
         logger.warning("[FILTER] No 'Date' column in tracker — cannot filter by date")
 
-    # Category B: incomplete merchants — ONLY when no specific date was selected
+    # Category B: incomplete merchants — ONLY when no specific date was selected.
+    # Bounded to the last 7 days so the fallback can never balloon into the
+    # entire tracker history (which would re-process thousands of merchants).
     incomplete_merchants = pd.DataFrame()
     if selected_date:
         logger.info("[FILTER] Specific date selected → SKIPPING 'incomplete merchants' fallback")
@@ -1313,10 +1316,28 @@ async def run_batch_sanity_check(selected_date='', progress=None):
                     return True
             return False
 
-        mask = tracker.apply(is_incomplete, axis=1)
-        incomplete_merchants = tracker[mask]
+        # Use tracker_dates (which has the parsed date column) when available, so the
+        # date bound below can actually be applied. Falls back to plain tracker otherwise.
+        source = tracker_dates if tracker_dates is not None else tracker
+        mask = source.apply(is_incomplete, axis=1)
+        incomplete_merchants = source[mask]
         incomplete_merchants = incomplete_merchants[incomplete_merchants[name_col].astype(str).str.strip() != '']
-        logger.info(f"[FILTER] Incomplete merchants (any check empty/No/Warn): {len(incomplete_merchants)}")
+
+        # Bound to last 7 days using the '_parsed_date' column.
+        if '_parsed_date' in incomplete_merchants.columns:
+            cutoff = pd.Timestamp.now().normalize() - pd.Timedelta(days=7)
+            before = len(incomplete_merchants)
+            incomplete_merchants = incomplete_merchants[
+                incomplete_merchants['_parsed_date'].notna() &
+                (incomplete_merchants['_parsed_date'] >= cutoff)
+            ]
+            logger.info(f"[FILTER] Incomplete merchants: {before} total → {len(incomplete_merchants)} within last 7 days")
+        else:
+            # No date column parsed — apply a hard safety cap to prevent runaway.
+            if len(incomplete_merchants) > 50:
+                logger.warning(f"[FILTER] No date column to bound by — capping {len(incomplete_merchants)} incomplete merchants to most recent 50")
+                incomplete_merchants = incomplete_merchants.tail(50)
+            logger.info(f"[FILTER] Incomplete merchants (any check empty/No/Warn): {len(incomplete_merchants)}")
 
     # If a specific date was selected → use ONLY merchants from that date
     # Otherwise → merge previous day + incomplete merchants
