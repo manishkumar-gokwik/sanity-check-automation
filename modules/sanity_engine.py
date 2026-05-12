@@ -169,8 +169,11 @@ async def check_mdr(sr_df, eb_mid, expected_rates, merchant_name):
                 continue
             actual_mdr = (total_charge / total_amount) * 100
             expected = expected_rates.get(exp_key, '')
+            # Strip %, whitespace, commas, surrounding quotes — commercial sheet
+            # often stores rates as "2.50%", "2.50 %", "2,50", etc.
+            cleaned = str(expected).strip().replace('%', '').replace(',', '.').replace('"', '').strip()
             try:
-                exp_val = float(expected) if expected and expected != 'nan' else None
+                exp_val = float(cleaned) if cleaned and cleaned.lower() not in ('nan', 'na', 'none', '') else None
             except (ValueError, TypeError):
                 exp_val = None
             if exp_val is not None:
