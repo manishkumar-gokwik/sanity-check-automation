@@ -809,6 +809,25 @@ async def _eb_navigate_to_settlements(page):
 
 async def _eb_generate_one_merchant_report(page, mid, report_name, merchant_name=''):
     """Generate and download settlement report for ONE merchant by NAME. Returns path to CSV or None."""
+    # Reset UI state from any previous merchant: close stale modals / dialogs / dropdowns
+    # so the "Generate New" click reliably opens a fresh dialog.
+    try:
+        for _ in range(3):
+            await page.keyboard.press('Escape')
+            await asyncio.sleep(0.3)
+        closed = await page.evaluate("""() => {
+            let n = 0;
+            for (const btn of document.querySelectorAll('.ant-modal-close, [aria-label="Close"]')) {
+                try { btn.click(); n++; } catch(e){}
+            }
+            return n;
+        }""")
+        if closed:
+            logger.info(f"  MID {mid}: closed {closed} stale dialog(s) before opening Generate New")
+            await asyncio.sleep(1)
+    except Exception:
+        pass
+
     # Open Generate form
     await page.evaluate("""() => {
         document.querySelectorAll('button').forEach(btn => {
@@ -1061,13 +1080,14 @@ async def _eb_generate_one_merchant_report(page, mid, report_name, merchant_name
     }""")
     await asyncio.sleep(8)
 
-    # Wait for OUR specific report row to show "Success" status (max 3 minutes)
+    # Wait for OUR specific report row to show "Success" status (max ~7 minutes)
+    # EB can be slow during high-load periods; previous 3-min cap was too aggressive.
     logger.info(f"  Waiting for report '{report_name}' to be ready …")
     row_ready = False
-    for poll in range(60):  # 60 × 3s = 180s max
-        await asyncio.sleep(3)
+    for poll in range(100):  # 100 × 4s = 400s max (≈ 6.7 min)
+        await asyncio.sleep(4)
         # Refresh the page list periodically to pick up new reports
-        if poll == 5 or poll == 15 or poll == 30:
+        if poll in (5, 15, 30, 60, 90):
             await _eb_navigate_to_settlements(page)
             await asyncio.sleep(2)
         status = await page.evaluate("""(name) => {
@@ -1094,78 +1114,92 @@ async def _eb_generate_one_merchant_report(page, mid, report_name, merchant_name
             # else: still processing — keep polling
 
     if not row_ready:
-        logger.warning(f"  MID {mid}: report '{report_name}' did not become 'Success' in 3 min")
+        logger.warning(f"  MID {mid}: report '{report_name}' did not become 'Success' in ~7 min")
         return None
 
-    # Click download icon in OUR specific row — match by exact name + click anchor/button with download attribute
-    try:
-        async with page.expect_download(timeout=60000) as dl:
-            clicked = await page.evaluate("""(name) => {
-                const rows = document.querySelectorAll('tr');
-                for (const row of rows) {
-                    const cells = row.querySelectorAll('td');
-                    let nameMatched = false;
-                    for (const cell of cells) {
-                        if (cell.textContent.trim() === name) {
-                            nameMatched = true;
-                            break;
-                        }
-                    }
-                    if (!nameMatched) continue;
-
-                    // Strategy A: anchor with download attribute or .csv href
-                    for (const a of row.querySelectorAll('a')) {
-                        const href = a.getAttribute('href') || '';
-                        if (a.hasAttribute('download') || href.includes('.csv') || href.includes('download')) {
-                            a.click();
-                            return 'anchor: ' + (href.substring(0, 60) || 'download attr');
-                        }
-                    }
-                    // Strategy B: download SVG/icon via aria-label or class
-                    for (const el of row.querySelectorAll('[aria-label*="ownload" i], [title*="ownload" i], .anticon-download, [class*="download" i]')) {
-                        // Skip if it's the eye/view icon
-                        const cls = (el.className && el.className.baseVal !== undefined) ? el.className.baseVal : (el.className || '');
-                        if (typeof cls === 'string' && (cls.includes('eye') || cls.includes('view'))) continue;
-                        el.click();
-                        return 'icon: ' + (el.getAttribute('aria-label') || el.getAttribute('title') || cls.substring(0, 40));
-                    }
-                    // Strategy C: last action icon in the row (download is typically the rightmost action)
-                    const actionIcons = row.querySelectorAll('button, [role="button"], svg');
-                    if (actionIcons.length >= 2) {
-                        const last = actionIcons[actionIcons.length - 1];
-                        last.click();
-                        return 'last-icon';
-                    }
+    # Click download icon in OUR specific row — match by exact name + click anchor/button with download attribute.
+    # Retry once with a longer timeout on failure (EB sometimes takes >60s to start the download stream).
+    download_js = """(name) => {
+        const rows = document.querySelectorAll('tr');
+        for (const row of rows) {
+            const cells = row.querySelectorAll('td');
+            let nameMatched = false;
+            for (const cell of cells) {
+                if (cell.textContent.trim() === name) {
+                    nameMatched = true;
+                    break;
                 }
-                return null;
-            }""", report_name)
-            if not clicked:
-                logger.warning(f"  MID {mid}: could not find download trigger in row '{report_name}'")
-                raise Exception("Download trigger not found")
-            logger.info(f"  Download click: {clicked}")
-        download = await dl.value
-        path = f'/tmp/eb_report_{mid}.csv'
-        await download.save_as(path)
-        logger.info(f"  Downloaded to {path}")
+            }
+            if (!nameMatched) continue;
 
-        # VERIFY the downloaded CSV actually contains the requested MID
+            // Strategy A: anchor with download attribute or .csv href
+            for (const a of row.querySelectorAll('a')) {
+                const href = a.getAttribute('href') || '';
+                if (a.hasAttribute('download') || href.includes('.csv') || href.includes('download')) {
+                    a.click();
+                    return 'anchor: ' + (href.substring(0, 60) || 'download attr');
+                }
+            }
+            // Strategy B: download SVG/icon via aria-label or class
+            for (const el of row.querySelectorAll('[aria-label*="ownload" i], [title*="ownload" i], .anticon-download, [class*="download" i]')) {
+                const cls = (el.className && el.className.baseVal !== undefined) ? el.className.baseVal : (el.className || '');
+                if (typeof cls === 'string' && (cls.includes('eye') || cls.includes('view'))) continue;
+                el.click();
+                return 'icon: ' + (el.getAttribute('aria-label') || el.getAttribute('title') || cls.substring(0, 40));
+            }
+            // Strategy C: last action icon in the row (download is typically the rightmost action)
+            const actionIcons = row.querySelectorAll('button, [role="button"], svg');
+            if (actionIcons.length >= 2) {
+                const last = actionIcons[actionIcons.length - 1];
+                last.click();
+                return 'last-icon';
+            }
+        }
+        return null;
+    }"""
+
+    download_path = None
+    last_err = None
+    for attempt in range(2):
+        timeout_ms = 90000 if attempt == 0 else 180000
         try:
-            verify_df = pd.read_csv(path, low_memory=False, nrows=50)
-            if 'Merchant ID' in verify_df.columns:
-                csv_mids = set(verify_df['Merchant ID'].astype(str).str.strip().unique())
-                if str(mid).strip() not in csv_mids:
-                    logger.error(f"  MID {mid}: ❌ downloaded CSV contains different MIDs {csv_mids} — DISCARDING")
-                    return None
-                logger.info(f"  MID {mid}: ✅ verified CSV contains correct MID")
-            else:
-                logger.warning(f"  MID {mid}: CSV has no 'Merchant ID' column — keeping anyway")
-        except Exception as ve:
-            logger.warning(f"  MID {mid}: could not verify CSV: {ve}")
+            async with page.expect_download(timeout=timeout_ms) as dl:
+                clicked = await page.evaluate(download_js, report_name)
+                if not clicked:
+                    logger.warning(f"  MID {mid}: could not find download trigger in row '{report_name}'")
+                    raise Exception("Download trigger not found")
+                logger.info(f"  Download click (attempt {attempt+1}): {clicked}")
+            download = await dl.value
+            download_path = f'/tmp/eb_report_{mid}.csv'
+            await download.save_as(download_path)
+            logger.info(f"  Downloaded to {download_path}")
+            break
+        except Exception as e:
+            last_err = e
+            logger.warning(f"  MID {mid}: download attempt {attempt+1} failed: {e}")
+            if attempt + 1 < 2:
+                logger.info(f"  MID {mid}: retrying download with longer timeout …")
+                await asyncio.sleep(3)
 
-        return path
-    except Exception as e:
-        logger.warning(f"  MID {mid}: download failed: {e}")
+    if not download_path:
+        logger.warning(f"  MID {mid}: download failed after retries: {last_err}")
         return None
+
+    # VERIFY the downloaded CSV actually contains the requested MID
+    try:
+        verify_df = pd.read_csv(download_path, low_memory=False, nrows=50)
+        if 'Merchant ID' in verify_df.columns:
+            csv_mids = set(verify_df['Merchant ID'].astype(str).str.strip().unique())
+            if str(mid).strip() not in csv_mids:
+                logger.error(f"  MID {mid}: ❌ downloaded CSV contains different MIDs {csv_mids} — DISCARDING")
+                return None
+            logger.info(f"  MID {mid}: ✅ verified CSV contains correct MID")
+        else:
+            logger.warning(f"  MID {mid}: CSV has no 'Merchant ID' column — keeping anyway")
+    except Exception as ve:
+        logger.warning(f"  MID {mid}: could not verify CSV: {ve}")
+
+    return download_path
 
 
 async def _eb_generate_settlement_report(page, merchants=None):
