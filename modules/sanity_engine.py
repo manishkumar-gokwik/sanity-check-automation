@@ -845,7 +845,10 @@ async def _eb_generate_one_merchant_report(page, mid, report_name, merchant_name
         await asyncio.sleep(1)
 
     # Find merchant dropdown wrapper (parent .ant-select that contains "Search Merchant" placeholder)
-    search_term = (merchant_name or str(mid)).strip()
+    # Prefer MID over name: MID is unique and avoids typos / spelling variants.
+    # Falls back to merchant_name only when MID is missing.
+    search_term = (str(mid).strip() or (merchant_name or '').strip())
+    logger.info(f"  EB search: using {'MID' if str(mid).strip() else 'name'} → '{search_term}'")
     try:
         # Click the SELECTOR div (the actual clickable wrapper) with force=True
         # to bypass Ant Design's overflow wrapper intercepting pointer events
@@ -953,8 +956,14 @@ async def _eb_generate_one_merchant_report(page, mid, report_name, merchant_name
     }""", {"name": merchant_name, "mid": str(mid)})
 
     if not selected:
-        # Retry once — re-click dropdown and re-type (handles "first merchant" race condition)
-        logger.info(f"  Retry: re-opening dropdown for '{merchant_name}'")
+        # Retry once — re-click dropdown and re-type. If the first attempt used the MID
+        # and didn't find a match, fall back to the merchant name (handles cases where
+        # EB's search box doesn't index MIDs the way we expect).
+        retry_term = (merchant_name or '').strip() if str(mid).strip() else search_term
+        if retry_term and retry_term != search_term:
+            logger.info(f"  Retry: switching from MID '{search_term}' to NAME '{retry_term}' for '{merchant_name}'")
+        else:
+            logger.info(f"  Retry: re-opening dropdown for '{merchant_name}'")
         try:
             await page.keyboard.press('Escape')
             await asyncio.sleep(1)
@@ -971,7 +980,7 @@ async def _eb_generate_one_merchant_report(page, mid, report_name, merchant_name
             if box:
                 await page.mouse.click(box['x'], box['y'])
                 await asyncio.sleep(2)
-                await page.keyboard.type(search_term, delay=120)
+                await page.keyboard.type(retry_term or search_term, delay=120)
                 await asyncio.sleep(4)
                 # Try matching again with same logic
                 selected = await page.evaluate("""({name, mid}) => {
