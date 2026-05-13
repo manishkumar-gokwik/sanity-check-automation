@@ -132,8 +132,90 @@ async def check_settlement(sr_df, eb_mid, merchant_name):
                          f"Reason: An error occurred during check — {str(e)[:80]}")
 
 
+def _parse_rate(val):
+    """Parse a sheet rate cell ('2.50%', '2,50', 'NA', etc.) to a float — or None if blank/invalid."""
+    cleaned = str(val).strip().replace('%', '').replace(',', '.').replace('"', '').strip()
+    if not cleaned or cleaned.lower() in ('nan', 'na', 'none'):
+        return None
+    try:
+        return float(cleaned)
+    except (ValueError, TypeError):
+        return None
+
+
+def _classify_txn_slab(row):
+    """Map a single transaction row to the commercial-sheet slab it should be compared against.
+
+    Returns the slab key (matches a key in `expected_rates`) or None if the row is
+    not a payment type we track (e.g. EMI, BNPL — not in this check yet).
+
+    Priority of classification:
+      1. Card brand (Amex / Diners)              → always wins regardless of credit/debit
+      2. Credit Card with corporate / international flag
+      3. Plain Credit Card                       → 'cc'
+      4. Debit Card                              → split by amount threshold ₹2000
+      5. UPI / Wallet / Net Banking
+    """
+    txn_type = str(row.get('Transaction Type', '')).strip().lower()
+    card_brand = str(row.get('Card Brand', '')).strip().lower()
+    card_cat = str(row.get('Card Category', '')).strip().lower()
+    cc_type = str(row.get('Credit_card_type', '')).strip().lower()
+    try:
+        amount = float(row.get('Transaction Amount', 0) or 0)
+    except (ValueError, TypeError):
+        amount = 0.0
+
+    # Card-brand rules first — Amex / Diners have their own slabs no matter what
+    if 'amex' in card_brand or 'american express' in card_brand:
+        return 'amex'
+    if 'diners' in card_brand:
+        return 'diners'
+
+    if 'credit card' in txn_type:
+        if 'corporate' in card_cat or 'corporate' in cc_type or 'business' in card_cat:
+            return 'corporate'
+        if 'international' in card_cat or 'international' in cc_type:
+            return 'international'
+        return 'cc'
+
+    if 'debit card' in txn_type:
+        return 'dc_below_2k' if amount < 2000 else 'dc_above_2k'
+
+    if 'upi on cc' in txn_type or 'upi_on_cc' in txn_type:
+        return 'upi_on_cc'
+    if txn_type == 'upi' or txn_type.startswith('upi'):
+        return 'upi'
+
+    if 'wallet' in txn_type:
+        return 'wallets'
+    if 'net banking' in txn_type or 'netbanking' in txn_type or txn_type == 'nb':
+        return 'net_banking'
+
+    return None
+
+
+SLAB_LABELS = {
+    'upi':           'UPI',
+    'cc':            'Credit Card',
+    'dc_below_2k':   'DC < ₹2K',
+    'dc_above_2k':   'DC ≥ ₹2K',
+    'amex':          'Amex',
+    'diners':        'Diners',
+    'corporate':     'Corporate CC',
+    'international': 'International CC',
+    'wallets':       'Wallets',
+    'net_banking':   'Net Banking',
+    'upi_on_cc':     'UPI on CC',
+}
+
+
 async def check_mdr(sr_df, eb_mid, expected_rates, merchant_name):
-    """Check 2: MDR — calculate actual vs expected. Looks up by EB MID."""
+    """Check 2: MDR — per-slab matching.
+
+    Each transaction is classified by Transaction Type + Card Brand + Card Category
+    + Credit_card_type. We sum charges and amounts within each slab and compare
+    the resulting rate against the corresponding column in the commercial sheet.
+    """
     try:
         if sr_df.empty:
             return _make_check("MDR", "WARN",
@@ -150,54 +232,67 @@ async def check_mdr(sr_df, eb_mid, expected_rates, merchant_name):
                              "Reason: No 'Merchant ID' column in settlement CSV.",
                              expected="Merchant ID column", actual="Missing")
         target = _normalize_mid(eb_mid)
-        txns = sr_df[sr_df[mid_col].apply(_normalize_mid) == target]
+        txns = sr_df[sr_df[mid_col].apply(_normalize_mid) == target].copy()
         if txns.empty:
             return _make_check("MDR", "WARN",
                              f"Reason: No transactions found for EB MID {eb_mid}. MDR cannot be calculated without transaction data.",
                              expected="Transactions to calculate MDR", actual="No transactions")
 
+        # Classify each transaction into a slab
+        txns['_slab'] = txns.apply(_classify_txn_slab, axis=1)
+        txns['_amount'] = pd.to_numeric(txns.get('Transaction Amount', 0), errors='coerce').fillna(0)
+        txns['_charge'] = pd.to_numeric(txns.get('Transaction Service Charge', 0), errors='coerce').fillna(0)
+
         details = []
         mismatches = []
-        all_match = True
-        for txn_type, exp_key in [('UPI', 'upi'), ('Credit Card', 'cc'), ('Debit Card', 'dc')]:
-            type_txns = txns[txns['Transaction Type'].astype(str).str.lower().str.contains(txn_type.lower())]
-            if type_txns.empty:
+        any_match_attempted = False
+
+        for slab_key, grp in txns.groupby('_slab', dropna=True):
+            if not slab_key:
                 continue
-            total_amount = pd.to_numeric(type_txns['Transaction Amount'], errors='coerce').sum()
-            total_charge = pd.to_numeric(type_txns['Transaction Service Charge'], errors='coerce').sum()
+            total_amount = grp['_amount'].sum()
+            total_charge = grp['_charge'].sum()
             if total_amount <= 0:
                 continue
             actual_mdr = (total_charge / total_amount) * 100
-            expected = expected_rates.get(exp_key, '')
-            # Strip %, whitespace, commas, surrounding quotes — commercial sheet
-            # often stores rates as "2.50%", "2.50 %", "2,50", etc.
-            cleaned = str(expected).strip().replace('%', '').replace(',', '.').replace('"', '').strip()
-            try:
-                exp_val = float(cleaned) if cleaned and cleaned.lower() not in ('nan', 'na', 'none', '') else None
-            except (ValueError, TypeError):
-                exp_val = None
-            if exp_val is not None:
-                match = abs(actual_mdr - exp_val) < 0.05
-                if not match:
-                    all_match = False
-                    mismatches.append(f"{txn_type}: actual {actual_mdr:.2f}% != expected {exp_val:.2f}%")
-                details.append(f"{txn_type}: {actual_mdr:.2f}% vs {exp_val:.2f}% {'✅' if match else '❌'}")
+            count = len(grp)
+            label = SLAB_LABELS.get(slab_key, slab_key)
+            expected = expected_rates.get(slab_key, '')
+            exp_val = _parse_rate(expected)
+
+            if exp_val is None:
+                # Sheet has no rate for this slab — flag as warning but don't fail
+                details.append(f"{label} ({count} txns): actual {actual_mdr:.2f}% vs sheet=(missing) ⚠️")
+                continue
+
+            any_match_attempted = True
+            match = abs(actual_mdr - exp_val) < 0.05
+            badge = '✅' if match else '❌'
+            details.append(f"{label} ({count} txns): {actual_mdr:.2f}% vs {exp_val:.2f}% {badge}")
+            if not match:
+                mismatches.append(f"{label}: actual {actual_mdr:.2f}% != expected {exp_val:.2f}% ({count} txns)")
 
         if not details:
             return _make_check("MDR", "WARN",
-                             "Reason: Expected rates not found in sheet, or no matching transaction types (UPI/CC/DC).",
-                             expected="UPI/CC/DC rates in sheet", actual="No data")
+                             "Reason: No classifiable payment slabs in this report (only EMI/BNPL/etc may be present).",
+                             expected="UPI/CC/DC/Amex/Diners/Corporate/Intl rates in sheet",
+                             actual="No matching slabs")
 
-        if all_match:
+        if not any_match_attempted:
+            return _make_check("MDR", "WARN",
+                             "Reason: Transactions found but none of the matching rate columns in the commercial sheet have values for this merchant.",
+                             expected="Rates in commercial sheet",
+                             actual=" | ".join(details))
+
+        if not mismatches:
             return _make_check("MDR", "PASS",
-                             "All MDR rates match with the values in sheet.",
+                             "All applicable MDR slabs match the commercial sheet.",
                              expected="Rates as per sheet",
                              actual=" | ".join(details))
-        else:
-            return _make_check("MDR", "FAIL",
-                             f"Reason: MDR rates do not match the sheet. Mismatches: {'; '.join(mismatches)}",
-                             expected="Rates as per sheet",
-                             actual=" | ".join(details))
+        return _make_check("MDR", "FAIL",
+                         f"Reason: MDR mismatches: {'; '.join(mismatches)}",
+                         expected="Rates as per sheet",
+                         actual=" | ".join(details))
     except Exception as e:
         logger.exception(f"MDR check failed: {merchant_name}")
         return _make_check("MDR", "FAIL",
@@ -1542,20 +1637,46 @@ async def run_batch_sanity_check(selected_date='', progress=None):
             update_progress('mdr', merchant_name, idx+1, len(merchants_to_check))
             checks = []
 
-            # Get expected rates from commercial sheet
-            expected_rates = {'upi': '', 'cc': '', 'dc': ''}
+            # Get expected rates from commercial sheet — one row per slab.
+            # Keys here map 1:1 to slabs detected from the EB CSV in check_mdr.
+            expected_rates = {
+                'upi':           '',
+                'cc':            '',
+                'dc_below_2k':   '',
+                'dc_above_2k':   '',
+                'amex':          '',
+                'diners':        '',
+                'corporate':     '',
+                'international': '',
+                'wallets':       '',
+                'net_banking':   '',
+                'upi_on_cc':     '',
+            }
             if not sample.empty:
                 comm_row = sample[sample['Merchant Name'].astype(str).str.lower() == merchant_name.lower()]
                 if not comm_row.empty:
                     cr = comm_row.iloc[0]
                     expected_rates = {
-                        'upi': _clean(cr.get('UPI', '')),
-                        'cc': _clean(cr.get('CC', '')),
-                        'dc': _clean(cr.get('DC below 2K', '')),
+                        'upi':           _clean(cr.get('UPI', '')),
+                        'cc':            _clean(cr.get('CC', '')),
+                        'dc_below_2k':   _clean(cr.get('DC below 2K', '')),
+                        'dc_above_2k':   _clean(cr.get('DC above 2k', '')),
+                        'amex':          _clean(cr.get('Amex', '')),
+                        'diners':        _clean(cr.get('Diners', '')),
+                        'corporate':     _clean(cr.get('Corporate Cards', '')),
+                        'international': _clean(cr.get('International Cards', '')),
+                        'wallets':       _clean(cr.get('WALLETS', '')),
+                        'net_banking':   _clean(cr.get('Net Banking Others/All', '')),
+                        'upi_on_cc':     _clean(cr.get('UPI ON CC', '')),
                     }
                     if not eb_mid:
                         eb_mid = _clean(cr.get('EB MID', ''))
-            logger.info(f"  Expected MDR rates: UPI={expected_rates['upi']}, CC={expected_rates['cc']}, DC={expected_rates['dc']}")
+            logger.info(
+                f"  Expected MDR rates: UPI={expected_rates['upi']}, CC={expected_rates['cc']}, "
+                f"DC<2K={expected_rates['dc_below_2k']}, DC≥2K={expected_rates['dc_above_2k']}, "
+                f"Amex={expected_rates['amex']}, Diners={expected_rates['diners']}, "
+                f"Corp={expected_rates['corporate']}, Intl={expected_rates['international']}"
+            )
 
             # Get SALT & KEY from sheet
             sk = sk_df[sk_df['Merchant Name'].astype(str).str.lower().str.strip() == merchant_name.lower()]
